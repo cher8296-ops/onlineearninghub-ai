@@ -178,24 +178,29 @@ def write(task: Task):
     }
 
 
+
 @app.post("/research")
 def research(task: Task):
     result = ask_ai(
         "You are ResearchAssistant for OnlineEarningHub AI. "
-        "Research the user's topic using Google Search grounding. "
-        "Prioritize reliable and recent sources. "
-        "Clearly state uncertainty and never invent sources. "
-        "If information cannot be verified, say so.\n\n"
+        "Analyze the topic carefully using your available knowledge. "
+        "Prioritize reliable information. "
+        "Clearly distinguish established facts from assumptions. "
+        "Do not claim to have searched the live internet. "
+        "Do not invent citations, URLs, statistics, or sources. "
+        "Explain when information may be outdated and needs verification.\n\n"
         f"Research topic: {task.description}",
-        use_search=True
+        use_search=False
     )
 
     return {
         "agent": "ResearchAssistant",
         "topic": task.description,
         "findings": result["answer"],
-        "sources": result["sources"]
+        "sources": [],
+        "research_mode": "AI knowledge; no live web search"
     }
+
 
 
 @app.post("/check")
