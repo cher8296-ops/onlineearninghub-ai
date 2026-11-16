@@ -269,7 +269,7 @@ def ask_ai(prompt: str, use_search: bool = False) -> dict:
 
     # A separate model can recover from model-specific 503 overload/timeouts.
     # Do not silently switch models for invalid credentials or quota (429).
-    if fallback_enabled and (last_status in (503, 504) or last_reason in {
+    if fallback_enabled and (last_status in RETRYABLE_HTTP_STATUSES or last_reason in {
         "provider timeout", "provider network timeout"
     }):
         logger.warning(
