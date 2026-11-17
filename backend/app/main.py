@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -255,7 +254,10 @@ def parse_gemini_response(response_body: str) -> dict:
 
         raise HTTPException(
             status_code=502,
-            detail="The AI could not generate an answer. Please try another request.",
+            detail=(
+                "The AI could not generate an answer. "
+                "Please try another request."
+            ),
         )
 
     candidate = candidates[0]
@@ -278,7 +280,10 @@ def parse_gemini_response(response_body: str) -> dict:
 
         raise HTTPException(
             status_code=502,
-            detail="The AI returned an empty answer. Please try again.",
+            detail=(
+                "The AI returned an empty answer. "
+                "Please try again."
+            ),
         )
 
     sources = []
@@ -355,7 +360,10 @@ def ask_ai(
 
         raise HTTPException(
             status_code=503,
-            detail="AI service is not configured. Please contact the administrator.",
+            detail=(
+                "AI service is not configured. "
+                "Please contact the administrator."
+            ),
         )
 
     if not validate_model_name(GEMINI_MODEL):
@@ -370,123 +378,113 @@ def ask_ai(
         and GEMINI_FALLBACK_MODEL != GEMINI_MODEL
     )
 
+    models_to_try = [GEMINI_MODEL]
+
+    if fallback_enabled:
+        models_to_try.append(GEMINI_FALLBACK_MODEL)
+
     last_status = None
     last_reason = "temporary provider failure"
 
-    # Primary model attempts
+    for model_index, model in enumerate(models_to_try):
 
-    for attempt in range(
-        1,
-        MAX_PRIMARY_ATTEMPTS + 1,
-    ):
+        fallback_used = model_index > 0
 
-        logger.info(
-            "AI request started. Model=%s Attempt=%s/%s",
-            GEMINI_MODEL,
-            attempt,
-            MAX_PRIMARY_ATTEMPTS,
-        )
-
-        try:
-
-            result = call_gemini(
-                GEMINI_MODEL,
-                prompt,
-                use_search,
-            )
+        for attempt in range(1, MAX_PRIMARY_ATTEMPTS + 1):
 
             logger.info(
-                "Primary AI model succeeded."
+                "AI request started. Model=%s Attempt=%s/%s Fallback=%s",
+                model,
+                attempt,
+                MAX_PRIMARY_ATTEMPTS,
+                fallback_used,
             )
 
-            result["model"] = GEMINI_MODEL
-            result["fallback_used"] = False
+            try:
 
-            return result
-
-        except urllib.error.HTTPError as error:
-
-            last_status = error.code
-
-            logger.warning(
-                "Primary model HTTP error. Status=%s",
-                error.code,
-            )
-
-            if error.code == 429:
-
-                wait_seconds = get_retry_after(
-                    error.headers
+                result = call_gemini(
+                    model,
+                    prompt,
+                    use_search,
                 )
 
-                if wait_seconds is None:
-                    wait_seconds = 3.0
-
-                if attempt < MAX_PRIMARY_ATTEMPTS:
-
-                    time.sleep(wait_seconds)
-                    continue
-
-                raise HTTPException(
-                    status_code=503,
-                    detail="The AI service has reached a temporary usage limit. Please try again later.",
+                logger.info(
+                    "AI model succeeded. Model=%s Fallback=%s",
+                    model,
+                    fallback_used,
                 )
 
-            if error.code in (401, 403):
+                result["model"] = model
+                result["fallback_used"] = fallback_used
+
+                return result
+
+            except urllib.error.HTTPError as error:
+
+                last_status = error.code
+
+                logger.warning(
+                    "AI model HTTP error. Model=%s Status=%s",
+                    model,
+                    error.code,
+                )
+
+                if error.code in (401, 403):
+
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "The AI provider rejected its credentials "
+                            "or permissions. The administrator must "
+                            "check the server configuration."
+                        ),
+                    ) from error
+
+                if error.code == 404:
+
+                    last_reason = "model not found or unavailable"
+                    break
+
+                if error.code == 429:
+
+                    last_reason = "provider quota limit"
+                    break
+
+                if error.code in RETRYABLE_HTTP_STATUSES:
+
+                    last_reason = f"provider HTTP {error.code}"
+
+                    if attempt < MAX_PRIMARY_ATTEMPTS:
+
+                        wait_seconds = (
+                            (2 ** attempt)
+                            + random.uniform(0, 0.5)
+                        )
+
+                        time.sleep(wait_seconds)
+                        continue
+
+                    break
 
                 raise HTTPException(
                     status_code=502,
-                    detail="The AI provider rejected its credentials or permissions. The administrator must check the server configuration.",
-                )
+                    detail=(
+                        "The AI provider rejected the request "
+                        f"(HTTP {error.code})."
+                    ),
+                ) from error
 
-            if error.code in RETRYABLE_HTTP_STATUSES:
-
-                last_reason = f"provider HTTP {error.code}"
-
-                if attempt < MAX_PRIMARY_ATTEMPTS:
-
-                    wait_seconds = (
-                        2 ** attempt
-                    ) + random.uniform(0, 0.5)
-
-                    time.sleep(wait_seconds)
-                    continue
-
-                break
-
-            raise HTTPException(
-                status_code=502,
-                detail=f"The AI provider rejected the request (HTTP {error.code}).",
-            )
-
-        except (
-            TimeoutError,
-            socket.timeout,
-        ):
-
-            last_reason = "provider timeout"
-
-            logger.warning(
-                "Primary AI model timed out."
-            )
-
-            if attempt < MAX_PRIMARY_ATTEMPTS:
-
-                time.sleep(2 ** attempt)
-                continue
-
-            break
-
-        except urllib.error.URLError as error:
-
-            reason = getattr(error, "reason", None)
-
-            if isinstance(
-                reason,
-                (TimeoutError, socket.timeout),
+            except (
+                TimeoutError,
+                socket.timeout,
             ):
 
-                last_reason = "provider network timeout"
+                last_reason = "provider timeout"
+
+                logger.warning(
+                    "AI model timed out. Model=%s",
+                    model,
+                )
 
                 if attempt < MAX_PRIMARY_ATTEMPTS:
 
@@ -495,89 +493,87 @@ def ask_ai(
 
                 break
 
-            logger.error(
-                "AI provider connection failed."
-            )
+            except urllib.error.URLError as error:
 
-            raise HTTPException(
-                status_code=503,
-                detail="The AI provider cannot currently be reached. Please try again later.",
-            ) from error
+                reason = getattr(error, "reason", None)
 
-    # Fallback model
+                if isinstance(
+                    reason,
+                    (TimeoutError, socket.timeout),
+                ):
 
-    fallback_conditions = (
-        last_status in RETRYABLE_HTTP_STATUSES
-        or last_reason in {
-            "provider timeout",
-            "provider network timeout",
-        }
-    )
+                    last_reason = "provider network timeout"
 
-    if fallback_enabled and fallback_conditions:
+                    logger.warning(
+                        "AI model network timeout. Model=%s",
+                        model,
+                    )
 
-        logger.warning(
-            "Primary model unavailable. Trying fallback model."
+                    if attempt < MAX_PRIMARY_ATTEMPTS:
+
+                        time.sleep(2 ** attempt)
+                        continue
+
+                    break
+
+                last_reason = "provider connection failure"
+
+                logger.warning(
+                    "AI provider connection failed. Model=%s",
+                    model,
+                )
+
+                break
+
+    if last_status == 404:
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The configured AI model was not found or is unavailable. "
+                "Please check the model names in the server configuration."
+            ),
         )
 
-        try:
-
-            result = call_gemini(
-                GEMINI_FALLBACK_MODEL,
-                prompt,
-                use_search,
-            )
-
-            logger.info(
-                "Fallback AI model succeeded."
-            )
-
-            result["model"] = GEMINI_FALLBACK_MODEL
-            result["fallback_used"] = True
-
-            return result
-
-        except urllib.error.HTTPError as error:
-
-            logger.error(
-                "Fallback model HTTP error. Status=%s",
-                error.code,
-            )
-
-            if error.code in (401, 403):
-
-                raise HTTPException(
-                    status_code=502,
-                    detail="The AI provider rejected its credentials or permissions.",
-                ) from error
-
-            if error.code == 429:
-
-                raise HTTPException(
-                    status_code=503,
-                    detail="The fallback AI model has reached a temporary usage limit. Please try again later.",
-                ) from error
-
-        except (
-            TimeoutError,
-            socket.timeout,
-            urllib.error.URLError,
-        ):
-
-            logger.exception(
-                "Fallback AI model failed."
-            )
-
-    if last_status == 503:
+    if last_status == 429:
 
         raise HTTPException(
             status_code=503,
-            detail="The AI models are temporarily overloaded. Please try again in a few minutes.",
+            detail=(
+                "The AI models have reached their temporary usage limits. "
+                "Please try again later."
+            ),
+        )
+
+    if last_status in RETRYABLE_HTTP_STATUSES:
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The AI models are temporarily overloaded. "
+                "Please try again in a few minutes."
+            ),
+        )
+
+    if last_reason in {
+        "provider timeout",
+        "provider network timeout",
+    }:
+
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "The AI provider did not respond in time. "
+                "Please try again shortly."
+            ),
         )
 
     raise HTTPException(
-        status_code=504,
-        detail="The AI provider did not respond in time. Please try again shortly.",
+        status_code=503,
+        detail=(
+            "The AI provider cannot currently be reached. "
+            "Please try again later."
+        ),
     )
 
 
