@@ -195,8 +195,11 @@ def initialize_database() -> bool:
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
         inspector = inspect(connection)
-        if not inspector.has_table("alembic_version"):
-            raise RuntimeError("Database migrations are not applied. Run 'alembic upgrade head' before starting the web service.")
+        if not inspector.has_table("alembic_version") or not inspector.has_table("users"):
+            raise RuntimeError("Database schema is incomplete. Run 'alembic upgrade head' before starting the web service.")
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        if not revision:
+            raise RuntimeError("No Alembic revision is recorded. Run 'alembic upgrade head' before starting the web service.")
     logger.info("PostgreSQL connection and Alembic schema version verified.")
     return True
 
