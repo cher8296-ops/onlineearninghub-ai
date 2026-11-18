@@ -84,19 +84,52 @@ class EndpointContractTests(unittest.TestCase):
         self.assertEqual(result["model_used"], "gemini-3.8-flash")
 
     @patch.object(api, "ask_ai")
-    def test_research_endpoint_discloses_no_live_search(self, ask_ai):
+    def test_write_endpoint_preserves_frontend_response_contract(self, ask_ai):
         ask_ai.return_value = {
-            "answer": "General background information.",
+            "answer": "A professional draft.",
             "sources": [],
-            "model": "gemini-3.8-flash",
+            "model": "gemini-3.5-flash-lite",
             "fallback_used": False,
         }
 
-        result = api.research(api.Task(description="Explain remote work"))
+        result = api.write(api.Task(description="Write a short proposal"))
 
-        self.assertEqual(result["research_mode"], "AI knowledge; no live web search")
+        self.assertEqual(result["agent"], "WritingAssistant")
+        self.assertEqual(result["content"], "A professional draft.")
+        self.assertEqual(result["model_used"], "gemini-3.5-flash-lite")
         ask_ai.assert_called_once()
-        self.assertFalse(ask_ai.call_args.kwargs["use_search"])
+
+    @patch.object(api, "ask_ai")
+    def test_research_endpoint_uses_live_grounded_search(self, ask_ai):
+        ask_ai.return_value = {
+            "answer": "Current findings.",
+            "sources": [{"title": "Example", "url": "https://example.com"}],
+            "model": "gemini-3.5-flash-lite",
+            "fallback_used": False,
+        }
+
+        result = api.research(api.Task(description="Current remote work options"))
+
+        self.assertEqual(result["research_mode"], "Live Google Search grounding")
+        self.assertEqual(result["sources"][0]["url"], "https://example.com")
+        ask_ai.assert_called_once()
+        self.assertTrue(ask_ai.call_args.kwargs["use_search"])
+
+    @patch.object(api, "ask_ai")
+    def test_quality_check_endpoint_preserves_frontend_response_contract(self, ask_ai):
+        ask_ai.return_value = {
+            "answer": "The draft is clear; improve the call to action.",
+            "sources": [],
+            "model": "gemini-3.5-flash-lite",
+            "fallback_used": False,
+        }
+
+        result = api.check(api.Task(description="Please review this draft"))
+
+        self.assertEqual(result["agent"], "QualityChecker")
+        self.assertIn("review", result)
+        self.assertEqual(result["model_used"], "gemini-3.5-flash-lite")
+        ask_ai.assert_called_once()
 
 
 if __name__ == "__main__":
