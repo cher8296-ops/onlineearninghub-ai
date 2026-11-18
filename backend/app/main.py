@@ -11,12 +11,12 @@ import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .accounts import router as accounts_router, initialize_database
+from .accounts import router as accounts_router, begin_ai_request, initialize_database, record_ai_request
 
 
 # ============================================================
@@ -826,7 +826,8 @@ def jobs():
 # ============================================================
 
 @app.post("/plan")
-def plan(task: Task):
+def plan(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are TaskPlanner for OnlineEarningHub AI. "
@@ -838,6 +839,7 @@ def plan(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "plan", task.description, result)
 
     return {
         "agent": "TaskPlanner",
@@ -853,7 +855,8 @@ def plan(task: Task):
 # ============================================================
 
 @app.post("/write")
-def write(task: Task):
+def write(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are WritingAssistant for OnlineEarningHub AI. "
@@ -864,6 +867,7 @@ def write(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "write", task.description, result)
 
     return {
         "agent": "WritingAssistant",
@@ -879,7 +883,8 @@ def write(task: Task):
 # ============================================================
 
 @app.post("/research")
-def research(task: Task):
+def research(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are ResearchAssistant for OnlineEarningHub AI. "
@@ -932,6 +937,8 @@ def research(task: Task):
             "This answer uses AI knowledge only and has not been verified against current web sources."
         )
 
+    record_ai_request(user_id, "research", task.description, result)
+
     return {
         "agent": "ResearchAssistant",
         "topic": task.description,
@@ -949,7 +956,8 @@ def research(task: Task):
 # ============================================================
 
 @app.post("/check")
-def check(task: Task):
+def check(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are QualityChecker for OnlineEarningHub AI. "
@@ -961,6 +969,7 @@ def check(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "check", task.description, result)
 
     return {
         "agent": "QualityChecker",
