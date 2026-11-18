@@ -16,7 +16,7 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .accounts import router as accounts_router, begin_ai_request, initialize_database, record_ai_request
+from .accounts import router as accounts_router, begin_ai_request, initialize_database, record_ai_request, record_application_error
 
 
 # ============================================================
@@ -141,6 +141,14 @@ app = FastAPI(
 # ============================================================
 
 app.include_router(accounts_router)
+
+
+@app.middleware("http")
+async def capture_application_errors(request, call_next):
+    response = await call_next(request)
+    if response.status_code >= 500:
+        record_application_error(request.url.path)
+    return response
 
 
 app.add_middleware(
