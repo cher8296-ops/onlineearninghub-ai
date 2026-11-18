@@ -457,10 +457,31 @@ def ask_ai(
 
                 last_status = error.code
 
+                # Log the provider's diagnostic response without exposing
+                # request headers, API keys, or user prompt content.
+                try:
+                    provider_body = error.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    provider_payload = json.loads(provider_body)
+                    provider_error = provider_payload.get("error") or {}
+                    provider_message = str(
+                        provider_error.get("message") or provider_body
+                    )[:1200]
+                    provider_reason = str(
+                        provider_error.get("status") or ""
+                    )[:120]
+                except Exception:
+                    provider_message = "Provider returned no readable error details."
+                    provider_reason = ""
+
                 logger.warning(
-                    "AI model HTTP error. Model=%s Status=%s",
+                    "AI model HTTP error. Model=%s Status=%s ProviderReason=%s ProviderMessage=%s",
                     model,
                     error.code,
+                    provider_reason,
+                    provider_message,
                 )
 
                 if error.code in (401, 403):
