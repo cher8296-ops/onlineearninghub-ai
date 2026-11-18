@@ -60,6 +60,10 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY", ""
 ).strip()
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+OPENAI_API_URL = "https://api.openai.com/v1/responses"
+
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL", "gemini-3.5-flash-lite"
 ).strip()
@@ -340,6 +344,59 @@ def parse_gemini_response(response_body: str) -> dict:
 
 
 # ============================================================
+# OPTIONAL INDEPENDENT PROVIDER FALLBACK (OPENAI RESPONSES API)
+# ============================================================
+
+def call_openai(prompt: str) -> dict:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI fallback is not configured.")
+
+    if not validate_model_name(OPENAI_MODEL):
+        raise RuntimeError("OpenAI model configuration is invalid.")
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": prompt,
+        "max_output_tokens": 1200,
+    }
+    request = urllib.request.Request(
+        OPENAI_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    ) as response:
+        body = response.read().decode("utf-8", errors="replace")
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("OpenAI returned invalid JSON.") from exc
+
+    answer = (data.get("output_text") or "").strip()
+    if not answer:
+        text_parts = []
+        for item in data.get("output") or []:
+            if item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if part.get("type") == "output_text" and part.get("text"):
+                        text_parts.append(part["text"])
+        answer = "\n".join(text_parts).strip()
+
+    if not answer:
+        raise RuntimeError("OpenAI returned no usable text.")
+
+    return {"answer": answer, "sources": []}
+
+
+# ============================================================
 # CALL AI MODEL
 # ============================================================
 
@@ -582,6 +639,27 @@ def ask_ai(
 
                 break
 
+    # Gemini quota/overload can affect every Gemini model at once.
+    # If an independent provider key is configured, try it before failing.
+    if OPENAI_API_KEY:
+        try:
+            logger.info("Gemini unavailable; trying configured OpenAI fallback.")
+            result = call_openai(prompt)
+            result["model"] = OPENAI_MODEL
+            result["fallback_used"] = True
+            result["provider"] = "openai"
+            logger.info("OpenAI fallback succeeded. Model=%s", OPENAI_MODEL)
+            return result
+        except urllib.error.HTTPError as error:
+            logger.warning("OpenAI fallback HTTP error. Status=%s", error.code)
+            if error.code in (401, 403):
+                raise HTTPException(
+                    status_code=502,
+                    detail="The backup AI provider rejected its credentials. The administrator must check OPENAI_API_KEY.",
+                ) from error
+        except (TimeoutError, socket.timeout, urllib.error.URLError, RuntimeError) as error:
+            logger.warning("OpenAI fallback unavailable. ErrorType=%s", type(error).__name__)
+
     if last_status == 404:
 
         raise HTTPException(
@@ -790,8 +868,15 @@ def research(task: Task):
             prompt,
             use_search=True,
         )
-        research_mode = "Live Google Search grounding"
-        warning = None
+        if result.get("provider") == "openai":
+            research_mode = "AI knowledge fallback (live search unavailable)"
+            warning = (
+                "Live Google Search grounding was unavailable. "
+                "This answer uses an independent AI provider and has not been verified against current web sources."
+            )
+        else:
+            research_mode = "Live Google Search grounding"
+            warning = None
 
     except HTTPException as error:
         if error.status_code != 503:
