@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.app import main as api
+from backend.app import accounts as accounts_api
 
 
 class RequestValidationTests(unittest.TestCase):
@@ -238,7 +239,7 @@ class EndpointContractTests(unittest.TestCase):
 
 class AccountSecurityTests(unittest.TestCase):
     def test_password_hash_verifies_and_rejects_wrong_password(self):
-        encoded = api.accounts._password_hash("long-password-123")
+        encoded = accounts_api._password_hash("long-password-123")
         self.assertTrue(api.accounts._password_valid("long-password-123", encoded))
         self.assertFalse(api.accounts._password_valid("wrong-password-123", encoded))
 
