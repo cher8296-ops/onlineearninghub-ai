@@ -237,6 +237,28 @@ class EndpointContractTests(unittest.TestCase):
 
 
 
+class DatabaseSchemaTests(unittest.TestCase):
+    def test_required_accounting_and_audit_tables_exist(self):
+        expected = {
+            "users", "email_verifications", "ai_requests", "daily_usage",
+            "subscriptions", "payment_events", "feedback",
+            "analytics_events", "audit_logs",
+        }
+        self.assertTrue(expected.issubset(set(accounts_api.Base.metadata.tables)))
+
+    def test_daily_usage_has_unique_user_day_constraint(self):
+        table = accounts_api.DailyUsage.__table__
+        indexes = [index for index in table.indexes if index.unique]
+        self.assertTrue(any(
+            {column.name for column in index.columns} == {"user_id", "usage_date"}
+            for index in indexes
+        ))
+
+    def test_payment_event_id_is_unique_for_webhook_idempotency(self):
+        column = accounts_api.PaymentEvent.__table__.c.provider_event_id
+        self.assertTrue(column.unique)
+
+
 class AccountSecurityTests(unittest.TestCase):
     def test_password_hash_verifies_and_rejects_wrong_password(self):
         encoded = accounts_api._password_hash("long-password-123")
