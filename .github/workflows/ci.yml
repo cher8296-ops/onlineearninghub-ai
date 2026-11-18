@@ -62,6 +62,7 @@ jobs:
               ("/check", "Review this sentence for clarity and grammar: 'We provides quality services for every customers.'", "review"),
           ]
 
+          failures = []
           for path, description, expected_key in cases:
               payload = json.dumps({"description": description}).encode("utf-8")
               request = urllib.request.Request(
@@ -75,15 +76,32 @@ jobs:
                       result = json.loads(response.read().decode("utf-8"))
               except urllib.error.HTTPError as error:
                   detail = error.read().decode("utf-8", errors="replace")[:1000]
-                  raise SystemExit(f"{path} failed with HTTP {error.code}: {detail}") from error
+                  failures.append(f"{path}: HTTP {error.code}: {detail}")
+                  print(f"FAIL {path}: HTTP {error.code}: {detail}")
+                  continue
+              except Exception as error:
+                  failures.append(f"{path}: {type(error).__name__}: {error}")
+                  print(f"FAIL {path}: {type(error).__name__}: {error}")
+                  continue
 
               if not isinstance(result.get(expected_key), str) or not result[expected_key].strip():
-                  raise SystemExit(f"{path} returned no usable {expected_key} output.")
+                  failures.append(f"{path}: missing usable {expected_key} output")
+                  print(f"FAIL {path}: missing usable {expected_key} output")
+                  continue
               if not result.get("model_used"):
-                  raise SystemExit(f"{path} did not report the model used.")
+                  failures.append(f"{path}: model_used was not returned")
+                  print(f"FAIL {path}: model_used was not returned")
+                  continue
               if path == "/research" and result.get("research_mode") != "Live Google Search grounding":
-                  raise SystemExit("Research endpoint did not use live Google Search grounding.")
+                  failures.append("/research: live Google Search grounding was not used")
+                  print("FAIL /research: live Google Search grounding was not used")
+                  continue
               print(f"PASS {path}: {result['model_used']} (fallback={result.get('fallback_used')})")
 
+          if failures:
+              print("\nLive smoke-test failures:")
+              for failure in failures:
+                  print(f"- {failure}")
+              raise SystemExit(f"{len(failures)} live endpoint check(s) failed.")
           print("PASS: all four live AI endpoints returned valid outputs.")
           PY
