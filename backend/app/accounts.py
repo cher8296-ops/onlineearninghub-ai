@@ -23,7 +23,7 @@ from typing import Generator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger("onlineearninghub.accounts")
@@ -108,6 +108,46 @@ class AnalyticsEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(30), default="stripe")
+    provider_subscription_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    provider_customer_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    price_id: Mapped[str] = mapped_column(String(128), default="")
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class PaymentEvent(Base):
+    __tablename__ = "payment_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_event_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    outcome: Mapped[str] = mapped_column(String(30), default="received")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(100), index=True)
+    target_type: Mapped[str] = mapped_column(String(60), default="")
+    target_id: Mapped[str] = mapped_column(String(128), default="")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+Index("ix_ai_requests_user_created", AIRequest.user_id, AIRequest.created_at)
+Index("ix_analytics_events_event_created", AnalyticsEvent.event, AnalyticsEvent.created_at)
+Index("ix_feedback_created", Feedback.created_at)
+
+
 class RegisterInput(BaseModel):
     email: str = Field(min_length=5, max_length=320)
     password: str = Field(min_length=12, max_length=128)
@@ -136,8 +176,15 @@ def initialize_database() -> bool:
     if engine is None:
         logger.warning("DATABASE_URL is not configured; account and persistence routes remain disabled.")
         return False
-    Base.metadata.create_all(bind=engine)
-    logger.info("Account and product database schema is ready.")
+    # Schema changes are applied by Alembic during the Render pre-deploy step.
+    # Application startup must never mutate production schema implicitly.
+    from sqlalchemy import inspect
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        inspector = inspect(connection)
+        if not inspector.has_table("alembic_version"):
+            raise RuntimeError("Database migrations are not applied. Run 'alembic upgrade head' before starting the web service.")
+    logger.info("PostgreSQL connection and Alembic schema version verified.")
     return True
 
 
