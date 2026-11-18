@@ -79,6 +79,25 @@ class OpenAIFallbackTests(unittest.TestCase):
         call_openai.assert_called_once_with("Write a short plan")
         self.assertEqual(call_gemini.call_count, 3)
 
+    @patch.object(api, "OPENAI_API_KEY", "test-openai-key")
+    @patch.object(api, "GEMINI_API_KEY", "")
+    @patch.object(api, "call_openai")
+    @patch.object(api, "call_gemini")
+    def test_openai_works_when_gemini_key_is_missing(self, call_gemini, call_openai):
+        call_openai.return_value = {
+            "answer": "Independent provider answer.",
+            "sources": [],
+        }
+
+        result = api.ask_ai("Write a short plan")
+
+        self.assertEqual(result["answer"], "Independent provider answer.")
+        self.assertEqual(result["provider"], "openai")
+        self.assertEqual(result["model"], api.OPENAI_MODEL)
+        self.assertTrue(result["fallback_used"])
+        call_openai.assert_called_once_with("Write a short plan")
+        call_gemini.assert_not_called()
+
     @patch.object(api, "OPENAI_API_KEY", "")
     @patch.object(api, "GEMINI_API_KEY", "test-gemini-key")
     @patch.object(api, "call_gemini")
@@ -98,6 +117,7 @@ class EndpointContractTests(unittest.TestCase):
         result = api.health()
         self.assertTrue(result["ai_configured"])
         self.assertEqual(result["ai_status"], "configured")
+        self.assertEqual(result["available_providers"], ["gemini"])
         self.assertNotIn("test-only-key", json.dumps(result))
 
     @patch.object(api, "GEMINI_API_KEY", "")
@@ -105,6 +125,14 @@ class EndpointContractTests(unittest.TestCase):
         result = api.health()
         self.assertFalse(result["ai_configured"])
         self.assertEqual(result["ai_status"], "not_configured")
+
+    @patch.object(api, "GEMINI_API_KEY", "")
+    @patch.object(api, "OPENAI_API_KEY", "test-openai-key")
+    def test_health_reports_openai_only_configuration(self):
+        result = api.health()
+        self.assertTrue(result["ai_configured"])
+        self.assertEqual(result["ai_status"], "configured")
+        self.assertEqual(result["available_providers"], ["openai"])
 
     @patch.object(api, "ask_ai")
     def test_plan_endpoint_preserves_frontend_response_contract(self, ask_ai):
