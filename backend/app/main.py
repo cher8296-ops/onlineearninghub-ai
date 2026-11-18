@@ -1009,7 +1009,10 @@ def startup_event():
     try:
         initialize_database()
     except Exception as error:
-        logger.exception("Database initialization failed. ErrorType=%s", type(error).__name__)
+        logger.exception("Database connectivity or migration verification failed. ErrorType=%s", type(error).__name__)
+        if os.getenv("DATABASE_URL", "").strip():
+            # Do not serve account or billing traffic with an unverified schema.
+            raise RuntimeError("Database migrations must be applied before the backend can start.") from error
 
     if not GEMINI_API_KEY:
 
