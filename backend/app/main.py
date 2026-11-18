@@ -28,8 +28,8 @@ API_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
 )
 
-REQUEST_TIMEOUT_SECONDS = 25
-MAX_PRIMARY_ATTEMPTS = 2
+REQUEST_TIMEOUT_SECONDS = 15
+MAX_PRIMARY_ATTEMPTS = 1
 
 RETRYABLE_HTTP_STATUSES = {
     500,
@@ -219,7 +219,7 @@ def make_gemini_request(
         ],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 1800,
+            "maxOutputTokens": 1200,
         },
     }
 
