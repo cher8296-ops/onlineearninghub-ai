@@ -353,6 +353,39 @@ def dashboard(authorization: Optional[str] = Header(default=None), db: Session =
     return {"user": {"email": user.email, "plan": user.plan}, "usage": {"today": used, "daily_limit": limit, "remaining": max(0, limit - used), "total_requests": total}, "recent_activity": history_rows(db, user.id, 10)}
 
 
+def begin_ai_request(authorization: Optional[str]) -> Optional[int]:
+    if not authorization:
+        return None
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="Account storage is not configured yet.")
+    db = SessionLocal()
+    try:
+        user = _current_user(authorization, db)
+        limit = PREMIUM_DAILY_LIMIT if user.plan == "premium" else FREE_DAILY_LIMIT
+        used = _daily_usage(db, user)
+        if used >= limit:
+            raise HTTPException(status_code=429, detail=f"Daily {user.plan} plan limit reached ({limit} AI requests).")
+        return user.id
+    finally:
+        db.close()
+
+
+def record_ai_request(user_id: Optional[int], tool: str, prompt: str, result: dict) -> None:
+    if user_id is None or SessionLocal is None:
+        return
+    db = SessionLocal()
+    try:
+        db.add(AIRequest(user_id=user_id, tool=tool, prompt=prompt, answer=result.get("answer", ""), model=result.get("model", "")))
+        db.add(AnalyticsEvent(user_id=user_id, event="ai_request", path="/" + tool))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Could not persist AI request. Tool=%s", tool)
+        raise HTTPException(status_code=503, detail="Your AI response was created, but we could not save it to your account. Please retry after checking your connection.")
+    finally:
+        db.close()
+
+
 def history_rows(db: Session, user_id: int, limit: int) -> list:
     rows = db.scalars(select(AIRequest).where(AIRequest.user_id == user_id).order_by(AIRequest.created_at.desc()).limit(limit)).all()
     return [{"id": row.id, "tool": row.tool, "prompt": row.prompt, "answer": row.answer, "model": row.model, "created_at": row.created_at.isoformat()} for row in rows]
