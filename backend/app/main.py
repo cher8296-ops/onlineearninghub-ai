@@ -773,19 +773,19 @@ def research(task: Task):
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are ResearchAssistant for OnlineEarningHub AI. "
-        "Analyze the topic carefully using your available "
-        "knowledge. Prioritize reliable information. "
-        "Distinguish established facts from assumptions. "
-        "Do not claim to have searched the live internet. "
-        "Do not invent citations, URLs, statistics, or sources. "
-        "Explain when information may be outdated and needs "
-        "verification.\n\n"
+        "Research the topic using live Google Search grounding. "
+        "Prioritize authoritative, current sources and compare "
+        "important claims across sources where possible. "
+        "Distinguish sourced facts from analysis and uncertainty. "
+        "Cite only URLs returned in the grounding metadata; never "
+        "invent citations, URLs, statistics, or sources. "
+        "If reliable current sources are unavailable, say so clearly.\n\n"
         f"Research topic: {task.description}"
     )
 
     result = ask_ai(
         prompt,
-        use_search=False,
+        use_search=True,
     )
 
     return {
@@ -793,7 +793,7 @@ def research(task: Task):
         "topic": task.description,
         "findings": result["answer"],
         "sources": result["sources"],
-        "research_mode": "AI knowledge; no live web search",
+        "research_mode": "Live Google Search grounding",
         "model_used": result["model"],
         "fallback_used": result["fallback_used"],
     }
