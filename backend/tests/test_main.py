@@ -243,14 +243,14 @@ class AccountSecurityTests(unittest.TestCase):
         self.assertTrue(accounts_api._password_valid("long-password-123", encoded))
         self.assertFalse(accounts_api._password_valid("wrong-password-123", encoded))
 
-    @patch.object(api.accounts, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
     def test_signed_session_token_round_trip(self):
         token = accounts_api._token({"sub": "42", "email": "person@example.com"}, accounts_api.JWT_SECRET, 60)
         claims = accounts_api._decode_token(token)
         self.assertEqual(claims["sub"], "42")
         self.assertEqual(claims["email"], "person@example.com")
 
-    @patch.object(api.accounts, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
     def test_tampered_session_token_is_rejected(self):
         token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
         parts = token.split(".")
