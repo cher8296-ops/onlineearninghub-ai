@@ -354,10 +354,11 @@ def dashboard(authorization: Optional[str] = Header(default=None), db: Session =
 
 
 def begin_ai_request(authorization: Optional[str]) -> Optional[int]:
-    if not authorization:
-        return None
     if SessionLocal is None:
-        raise HTTPException(status_code=503, detail="Account storage is not configured yet.")
+        # Preserve guest mode only while persistent accounts are not provisioned.
+        return None
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Sign in to use the AI workspace and save your activity.")
     db = SessionLocal()
     try:
         user = _current_user(authorization, db)
