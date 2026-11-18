@@ -23,7 +23,8 @@ from typing import Generator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select, text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger("onlineearninghub.accounts")
@@ -106,6 +107,18 @@ class AnalyticsEvent(Base):
     event: Mapped[str] = mapped_column(String(50), index=True)
     path: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class DailyUsage(Base):
+    __tablename__ = "daily_usage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    usage_date: Mapped[datetime] = mapped_column(Date, index=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        Index("uq_daily_usage_user_date", "user_id", "usage_date", unique=True),
+        Index("ix_daily_usage_date", "usage_date"),
+    )
 
 
 class Subscription(Base):
@@ -285,8 +298,9 @@ def _send_email(recipient: str, subject: str, body: str) -> None:
 
 
 def _daily_usage(db: Session, user: User) -> int:
-    start = datetime.combine(_now().date(), datetime.min.time(), tzinfo=timezone.utc)
-    return db.scalar(select(func.count(AIRequest.id)).where(AIRequest.user_id == user.id, AIRequest.created_at >= start)) or 0
+    today = _now().date()
+    count = db.scalar(select(DailyUsage.request_count).where(DailyUsage.user_id == user.id, DailyUsage.usage_date == today))
+    return int(count or 0)
 
 
 def _admin(user: User) -> None:
@@ -410,8 +424,20 @@ def begin_ai_request(authorization: Optional[str]) -> Optional[int]:
     try:
         user = _current_user(authorization, db)
         limit = PREMIUM_DAILY_LIMIT if user.plan == "premium" else FREE_DAILY_LIMIT
-        used = _daily_usage(db, user)
-        if used >= limit:
+        today = _now().date()
+        # Atomic PostgreSQL quota reservation prevents parallel requests from
+        # exceeding the plan allowance. Failed provider attempts consume a slot
+        # for the UTC day to prevent quota-bypass retry storms.
+        statement = pg_insert(DailyUsage).values(
+            user_id=user.id, usage_date=today, request_count=1
+        ).on_conflict_do_update(
+            index_elements=[DailyUsage.user_id, DailyUsage.usage_date],
+            set_={"request_count": DailyUsage.request_count + 1},
+            where=DailyUsage.request_count < limit,
+        ).returning(DailyUsage.request_count)
+        with db.begin():
+            reserved = db.execute(statement).scalar_one_or_none()
+        if reserved is None:
             raise HTTPException(status_code=429, detail=f"Daily {user.plan} plan limit reached ({limit} AI requests).")
         return user.id
     finally:
