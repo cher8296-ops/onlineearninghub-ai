@@ -296,14 +296,13 @@ def register(data: RegisterInput, db: Session = Depends(get_db)):
     db.flush()
     raw_token = secrets.token_urlsafe(32)
     db.add(Verification(user_id=user.id, token_hash=hashlib.sha256(raw_token.encode()).hexdigest(), expires_at=_now() + timedelta(seconds=VERIFY_TTL_SECONDS)))
-    db.commit()
     link = f"{FRONTEND_URL}/?verify={urllib.parse.quote(raw_token)}"
     try:
         _send_email(email, "Verify your OnlineEarningHub AI account", f"Welcome to OnlineEarningHub AI. Verify your email using this link:\n\n{link}\n\nThis link expires in 24 hours. If you did not create this account, ignore this email.")
     except HTTPException:
-        db.delete(user)
-        db.commit()
+        db.rollback()
         raise
+    db.commit()
     return {"status": "verification_sent", "message": "Check your email to verify your account before signing in."}
 
 
