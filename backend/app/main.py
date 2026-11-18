@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 # ============================================================
 
 APP_NAME = "OnlineEarningHub AI"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 
 API_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -66,6 +66,26 @@ GEMINI_MODEL = os.getenv(
 GEMINI_FALLBACK_MODEL = os.getenv(
     "GEMINI_FALLBACK_MODEL", "gemini-3.6-flash"
 ).strip()
+
+
+# ============================================================
+# SHARED INTERNATIONAL QUALITY STANDARD
+# ============================================================
+
+GLOBAL_QUALITY_STANDARD = """
+You are a professional AI specialist working for OnlineEarningHub AI.
+Apply these standards to every response:
+- Understand the user's actual goal and answer the full request.
+- Match the language used by the user unless they request another language.
+- Use clear structure, precise wording, practical steps, and professional tone.
+- Separate verified facts, estimates, assumptions, and recommendations.
+- Never fabricate sources, URLs, statistics, credentials, capabilities, or completed actions.
+- State important limitations and uncertainty plainly; never overpromise results or income.
+- Respect privacy and security. Never request passwords, API keys, or other secrets.
+- Prefer actionable, cost-conscious solutions and disclose meaningful costs or prerequisites.
+- If essential information is missing, state the assumption or ask one focused question.
+- Review the response for relevance, consistency, correctness, and readability before returning it.
+"""
 
 
 DEFAULT_FRONTEND_ORIGINS = [
@@ -597,6 +617,14 @@ def health():
     return {
         "status": "healthy",
         "version": APP_VERSION,
+        "ai_configured": bool(GEMINI_API_KEY),
+        "ai_status": (
+            "configured" if GEMINI_API_KEY else "not_configured"
+        ),
+        "note": (
+            "Configuration is present; provider availability is checked "
+            "when an AI task is submitted."
+        ),
     }
 
 
@@ -649,7 +677,7 @@ def jobs():
 @app.post("/plan")
 def plan(task: Task):
 
-    prompt = (
+    prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are TaskPlanner for OnlineEarningHub AI. "
         "Create a realistic, numbered, step-by-step plan. "
         "Identify risks and distinguish confirmed facts "
@@ -676,7 +704,7 @@ def plan(task: Task):
 @app.post("/write")
 def write(task: Task):
 
-    prompt = (
+    prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are WritingAssistant for OnlineEarningHub AI. "
         "Complete the user's writing request professionally. "
         "Use clear and useful language. Do not invent "
@@ -702,7 +730,7 @@ def write(task: Task):
 @app.post("/research")
 def research(task: Task):
 
-    prompt = (
+    prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are ResearchAssistant for OnlineEarningHub AI. "
         "Analyze the topic carefully using your available "
         "knowledge. Prioritize reliable information. "
@@ -737,7 +765,7 @@ def research(task: Task):
 @app.post("/check")
 def check(task: Task):
 
-    prompt = (
+    prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are QualityChecker for OnlineEarningHub AI. "
         "Review the submitted work for clarity, completeness, "
         "and accuracy. List errors, missing information, "
