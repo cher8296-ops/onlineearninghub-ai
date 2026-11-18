@@ -427,11 +427,12 @@ def ask_ai(
         for attempt in range(1, MAX_PRIMARY_ATTEMPTS + 1):
 
             logger.info(
-                "AI request started. Model=%s Attempt=%s/%s Fallback=%s",
+                "AI request started. Model=%s Attempt=%s/%s Fallback=%s Search=%s",
                 model,
                 attempt,
                 MAX_PRIMARY_ATTEMPTS,
                 fallback_used,
+                use_search,
             )
 
             try:
@@ -443,9 +444,10 @@ def ask_ai(
                 )
 
                 logger.info(
-                    "AI model succeeded. Model=%s Fallback=%s",
+                    "AI model succeeded. Model=%s Fallback=%s Search=%s",
                     model,
                     fallback_used,
+                    use_search,
                 )
 
                 result["model"] = model
@@ -783,19 +785,47 @@ def research(task: Task):
         f"Research topic: {task.description}"
     )
 
-    result = ask_ai(
-        prompt,
-        use_search=True,
-    )
+    try:
+        result = ask_ai(
+            prompt,
+            use_search=True,
+        )
+        research_mode = "Live Google Search grounding"
+        warning = None
+
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+
+        logger.warning(
+            "Live research search is unavailable; trying clearly-labeled AI-only fallback."
+        )
+
+        fallback_prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
+            "You are ResearchAssistant for OnlineEarningHub AI. "
+            "Provide a careful research-style overview using your existing knowledge only. "
+            "Do not claim to have searched the web, do not present information as current "
+            "unless you can establish its date, and do not invent citations or URLs. "
+            "Clearly state uncertainty and advise the user to verify time-sensitive facts.\n\n"
+            f"Research topic: {task.description}"
+        )
+
+        result = ask_ai(fallback_prompt)
+        research_mode = "AI knowledge fallback (live search unavailable)"
+        warning = (
+            "Live web search was temporarily unavailable. "
+            "This answer uses AI knowledge only and has not been verified against current web sources."
+        )
 
     return {
         "agent": "ResearchAssistant",
         "topic": task.description,
         "findings": result["answer"],
         "sources": result["sources"],
-        "research_mode": "Live Google Search grounding",
+        "research_mode": research_mode,
+        "warning": warning,
         "model_used": result["model"],
-        "fallback_used": result["fallback_used"],
+        "fallback_used": result["fallback_used"] or warning is not None,
     }
 
 
