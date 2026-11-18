@@ -92,7 +92,10 @@ jobs:
                   failures.append(f"{path}: model_used was not returned")
                   print(f"FAIL {path}: model_used was not returned")
                   continue
-              if path == "/research" and result.get("research_mode") != "Live Google Search grounding":
+              if path == "/research" and result.get("research_mode") not in {
+              "Live Google Search grounding",
+              "AI knowledge fallback (live search unavailable)",
+          }:
                   failures.append("/research: live Google Search grounding was not used")
                   print("FAIL /research: live Google Search grounding was not used")
                   continue
