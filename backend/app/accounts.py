@@ -524,38 +524,113 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")
     try:
-        parts = dict(item.split("=", 1) for item in signature.split(",") if "=" in item)
+        parts = {}
+        for item in signature.split(","):
+            if "=" in item:
+                key, value = item.split("=", 1)
+                if key == "v1":
+                    parts.setdefault("v1_values", []).append(value)
+                elif key == "t":
+                    parts["t"] = value
         timestamp = int(parts["t"])
-        supplied = parts["v1"]
-    except (KeyError, ValueError):
+        signatures = parts["v1_values"]
+    except (KeyError, ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Invalid payment signature.")
     if abs(int(time.time()) - timestamp) > 300:
         raise HTTPException(status_code=400, detail="Payment signature has expired.")
     expected = hmac.new(secret.encode(), str(timestamp).encode() + b"." + payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, supplied):
+    if not any(hmac.compare_digest(expected, item) for item in signatures):
         raise HTTPException(status_code=400, detail="Invalid payment signature.")
     try:
         event = json.loads(payload)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(status_code=400, detail="Invalid payment event.")
-    event_type = event.get("type")
+
+    event_id = event.get("id")
+    event_type = event.get("type", "")
+    if not event_id or not event_type:
+        raise HTTPException(status_code=400, detail="Payment event is missing its identifier or type.")
+
+    # Stripe retries deliveries. The unique provider event ID makes processing idempotent.
+    from sqlalchemy.exc import IntegrityError
+    db.add(PaymentEvent(provider_event_id=event_id, event_type=event_type, outcome="processing"))
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return {"received": True, "duplicate": True}
+
     obj = (event.get("data") or {}).get("object") or {}
-    if event_type == "checkout.session.completed" and obj.get("mode") == "subscription" and obj.get("payment_status") == "paid":
-        user_id = (obj.get("metadata") or {}).get("user_id") or obj.get("client_reference_id")
-        user = db.get(User, int(user_id)) if user_id and str(user_id).isdigit() else None
-        if user:
-            user.plan = "premium"
-            user.stripe_customer_id = obj.get("customer")
-            db.add(AnalyticsEvent(user_id=user.id, event="subscription_started", path="/billing"))
-            db.commit()
-    elif event_type == "customer.subscription.deleted":
+    user = None
+    action = None
+    if event_type == "checkout.session.completed":
+        if obj.get("mode") == "subscription" and obj.get("payment_status") in ("paid", "no_payment_required"):
+            metadata = obj.get("metadata") or {}
+            user_id = metadata.get("user_id") or obj.get("client_reference_id")
+            user = db.get(User, int(user_id)) if user_id and str(user_id).isdigit() else None
+            subscription_id = obj.get("subscription")
+            if user and subscription_id:
+                user.plan = "premium"
+                user.stripe_customer_id = obj.get("customer")
+                subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
+                if subscription is None:
+                    subscription = Subscription(
+                        user_id=user.id,
+                        provider_subscription_id=subscription_id,
+                        provider_customer_id=obj.get("customer"),
+                        status="active",
+                        price_id=(obj.get("metadata") or {}).get("price_id", ""),
+                    )
+                    db.add(subscription)
+                action = "subscription_checkout_completed"
+    elif event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
+        customer_id = obj.get("customer")
+        subscription_id = obj.get("id")
+        user = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
+        if user and subscription_id:
+            status = obj.get("status", "canceled")
+            subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
+            if subscription is None:
+                subscription = Subscription(
+                    user_id=user.id,
+                    provider_subscription_id=subscription_id,
+                    provider_customer_id=customer_id,
+                    status=status,
+                )
+                db.add(subscription)
+            subscription.status = status
+            subscription.cancel_at_period_end = bool(obj.get("cancel_at_period_end", False))
+            subscription.price_id = (((obj.get("items") or {}).get("data") or [{}])[0].get("price") or {}).get("id", "")
+            period_end = obj.get("current_period_end")
+            subscription.current_period_end = datetime.fromtimestamp(period_end, timezone.utc) if period_end else None
+            subscription.updated_at = _now()
+            user.plan = "premium" if status in ("active", "trialing") else "free"
+            action = "subscription_" + status
+    elif event_type == "invoice.payment_failed":
         customer_id = obj.get("customer")
         user = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
         if user:
+            subscription = db.scalar(select(Subscription).where(Subscription.user_id == user.id).order_by(Subscription.updated_at.desc()))
+            if subscription:
+                subscription.status = "past_due"
+                subscription.updated_at = _now()
             user.plan = "free"
-            db.add(AnalyticsEvent(user_id=user.id, event="subscription_cancelled", path="/billing"))
-            db.commit()
-    return {"received": True}
+            action = "subscription_payment_failed"
+
+    payment_event = db.scalar(select(PaymentEvent).where(PaymentEvent.provider_event_id == event_id))
+    if payment_event:
+        payment_event.outcome = "processed"
+    if user and action:
+        db.add(AuditLog(
+            actor_user_id=user.id,
+            action=action,
+            target_type="user_subscription",
+            target_id=str(user.id),
+            metadata_json=json.dumps({"provider_event_id": event_id, "event_type": event_type}, separators=(",", ":")),
+        ))
+        db.add(AnalyticsEvent(user_id=user.id, event=action[:50], path="/billing"))
+    db.commit()
+    return {"received": True, "processed": bool(action)}
 
 
 @router.get("/admin/analytics")
