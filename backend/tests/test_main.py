@@ -1,5 +1,6 @@
 import json
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -52,6 +53,43 @@ class GeminiResponseTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             api.parse_gemini_response("not-json")
         self.assertEqual(raised.exception.status_code, 502)
+
+
+class OpenAIFallbackTests(unittest.TestCase):
+    @patch.object(api, "OPENAI_API_KEY", "test-openai-key")
+    @patch.object(api, "GEMINI_API_KEY", "test-gemini-key")
+    @patch.object(api, "call_openai")
+    @patch.object(api, "call_gemini")
+    def test_openai_is_used_when_all_gemini_models_are_unavailable(
+        self, call_gemini, call_openai
+    ):
+        call_gemini.side_effect = HTTPError(
+            "https://example.invalid", 503, "Unavailable", {}, None
+        )
+        call_openai.return_value = {
+            "answer": "Backup answer.",
+            "sources": [],
+        }
+
+        result = api.ask_ai("Write a short plan")
+
+        self.assertEqual(result["answer"], "Backup answer.")
+        self.assertEqual(result["provider"], "openai")
+        self.assertTrue(result["fallback_used"])
+        call_openai.assert_called_once_with("Write a short plan")
+        self.assertEqual(call_gemini.call_count, 3)
+
+    @patch.object(api, "OPENAI_API_KEY", "")
+    @patch.object(api, "GEMINI_API_KEY", "test-gemini-key")
+    @patch.object(api, "call_gemini")
+    def test_no_openai_fallback_is_attempted_without_key(self, call_gemini):
+        call_gemini.side_effect = HTTPError(
+            "https://example.invalid", 503, "Unavailable", {}, None
+        )
+        with self.assertRaises(HTTPException) as raised:
+            api.ask_ai("Write a short plan")
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(call_gemini.call_count, 3)
 
 
 class EndpointContractTests(unittest.TestCase):
