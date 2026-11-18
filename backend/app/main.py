@@ -68,6 +68,10 @@ GEMINI_FALLBACK_MODEL = os.getenv(
     "GEMINI_FALLBACK_MODEL", "gemini-3.6-flash"
 ).strip()
 
+GEMINI_EMERGENCY_MODEL = os.getenv(
+    "GEMINI_EMERGENCY_MODEL", "gemini-3.5-flash-lite"
+).strip()
+
 
 # ============================================================
 # SHARED INTERNATIONAL QUALITY STANDARD
@@ -394,15 +398,24 @@ def ask_ai(
             detail="The primary AI model configuration is invalid.",
         )
 
-    fallback_enabled = (
-        validate_model_name(GEMINI_FALLBACK_MODEL)
-        and GEMINI_FALLBACK_MODEL != GEMINI_MODEL
-    )
+    models_to_try = []
 
-    models_to_try = [GEMINI_MODEL]
+    for candidate_model in (
+        GEMINI_MODEL,
+        GEMINI_FALLBACK_MODEL,
+        GEMINI_EMERGENCY_MODEL,
+    ):
+        if (
+            validate_model_name(candidate_model)
+            and candidate_model not in models_to_try
+        ):
+            models_to_try.append(candidate_model)
 
-    if fallback_enabled:
-        models_to_try.append(GEMINI_FALLBACK_MODEL)
+    if not models_to_try:
+        raise HTTPException(
+            status_code=503,
+            detail="No valid AI model is configured.",
+        )
 
     last_status = None
     last_reason = "temporary provider failure"
