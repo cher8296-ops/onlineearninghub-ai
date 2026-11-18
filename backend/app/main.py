@@ -435,11 +435,30 @@ def ask_ai(
 ) -> dict:
 
     if not GEMINI_API_KEY:
+        if OPENAI_API_KEY:
+            try:
+                logger.info("Gemini key is absent; using configured OpenAI provider.")
+                result = call_openai(prompt)
+                result["model"] = OPENAI_MODEL
+                result["fallback_used"] = True
+                result["provider"] = "openai"
+                return result
+            except urllib.error.HTTPError as error:
+                logger.warning("OpenAI provider HTTP error without Gemini key. Status=%s", error.code)
+                if error.code in (401, 403):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="The configured backup AI provider rejected its credentials. The administrator must check OPENAI_API_KEY.",
+                    ) from error
+            except (TimeoutError, socket.timeout, urllib.error.URLError, RuntimeError) as error:
+                logger.warning("OpenAI provider unavailable without Gemini key. ErrorType=%s", type(error).__name__)
 
-        logger.error(
-            "GEMINI_API_KEY is not configured."
-        )
+            raise HTTPException(
+                status_code=503,
+                detail="The configured AI provider is temporarily unavailable. Please try again later.",
+            )
 
+        logger.error("No AI provider API key is configured.")
         raise HTTPException(
             status_code=503,
             detail=(
@@ -738,10 +757,16 @@ def health():
     return {
         "status": "healthy",
         "version": APP_VERSION,
-        "ai_configured": bool(GEMINI_API_KEY),
+        "ai_configured": bool(GEMINI_API_KEY or OPENAI_API_KEY),
         "ai_status": (
-            "configured" if GEMINI_API_KEY else "not_configured"
+            "configured" if (GEMINI_API_KEY or OPENAI_API_KEY) else "not_configured"
         ),
+        "available_providers": [
+            provider for provider, configured in (
+                ("gemini", bool(GEMINI_API_KEY)),
+                ("openai", bool(OPENAI_API_KEY)),
+            ) if configured
+        ],
         "note": (
             "Configuration is present; provider availability is checked "
             "when an AI task is submitted."
