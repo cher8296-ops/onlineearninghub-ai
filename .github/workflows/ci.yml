@@ -1,4 +1,4 @@
-name: Backend quality checks
+name: Backend quality and live smoke checks
 
 on:
   push:
@@ -6,14 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install backend dependencies
@@ -25,3 +28,62 @@ jobs:
           python -c 'from backend.app.main import app; assert app.version == "0.8.0"; print("Backend import OK:", app.version)'
       - name: Run backend unit tests
         run: python -m unittest discover -s backend/tests -v
+      - name: Smoke-test all four deployed AI tools
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        timeout-minutes: 12
+        env:
+          API_BASE_URL: https://onlineearninghub-ai.onrender.com
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          base = os.environ["API_BASE_URL"].rstrip("/")
+          health = None
+          for attempt in range(24):
+              try:
+                  with urllib.request.urlopen(base + "/health", timeout=15) as response:
+                      health = json.loads(response.read().decode("utf-8"))
+                  if health.get("status") == "healthy" and health.get("ai_configured"):
+                      break
+              except Exception as error:
+                  print(f"Waiting for backend ({attempt + 1}/24): {type(error).__name__}")
+              time.sleep(5)
+          else:
+              raise SystemExit("Backend did not become healthy with AI configured.")
+
+          cases = [
+              ("/plan", "Create a three-step plan for learning a new skill in one week.", "plan"),
+              ("/write", "Write a two-sentence professional introduction for a beginner freelancer.", "content"),
+              ("/research", "Find two current, reliable sources about renewable energy developments and summarize them.", "findings"),
+              ("/check", "Review this sentence for clarity and grammar: 'We provides quality services for every customers.'", "review"),
+          ]
+
+          for path, description, expected_key in cases:
+              payload = json.dumps({"description": description}).encode("utf-8")
+              request = urllib.request.Request(
+                  base + path,
+                  data=payload,
+                  headers={"Content-Type": "application/json", "Accept": "application/json"},
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=180) as response:
+                      result = json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as error:
+                  detail = error.read().decode("utf-8", errors="replace")[:1000]
+                  raise SystemExit(f"{path} failed with HTTP {error.code}: {detail}") from error
+
+              if not isinstance(result.get(expected_key), str) or not result[expected_key].strip():
+                  raise SystemExit(f"{path} returned no usable {expected_key} output.")
+              if not result.get("model_used"):
+                  raise SystemExit(f"{path} did not report the model used.")
+              if path == "/research" and result.get("research_mode") != "Live Google Search grounding":
+                  raise SystemExit("Research endpoint did not use live Google Search grounding.")
+              print(f"PASS {path}: {result['model_used']} (fallback={result.get('fallback_used')})")
+
+          print("PASS: all four live AI endpoints returned valid outputs.")
+          PY
