@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 # ============================================================
 
 APP_NAME = "OnlineEarningHub AI"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 
 API_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -61,7 +61,7 @@ GEMINI_API_KEY = os.getenv(
 ).strip()
 
 GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL", "gemini-3.8-flash"
+    "GEMINI_MODEL", "gemini-3.5-flash-lite"
 ).strip()
 
 GEMINI_FALLBACK_MODEL = os.getenv(
@@ -69,7 +69,7 @@ GEMINI_FALLBACK_MODEL = os.getenv(
 ).strip()
 
 GEMINI_EMERGENCY_MODEL = os.getenv(
-    "GEMINI_EMERGENCY_MODEL", "gemini-3.5-flash-lite"
+    "GEMINI_EMERGENCY_MODEL", "gemini-3.8-flash"
 ).strip()
 
 
