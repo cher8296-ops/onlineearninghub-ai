@@ -28,7 +28,7 @@ API_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
 )
 
-REQUEST_TIMEOUT_SECONDS = 15
+REQUEST_TIMEOUT_SECONDS = 25
 MAX_PRIMARY_ATTEMPTS = 1
 
 RETRYABLE_HTTP_STATUSES = {
