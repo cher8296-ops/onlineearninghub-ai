@@ -16,7 +16,7 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .accounts import router as accounts_router, begin_ai_request, initialize_database, record_ai_request, record_application_error
+from .accounts import router as accounts_router, begin_ai_request, engine as database_engine, initialize_database, record_ai_request, record_application_error
 
 
 # ============================================================
@@ -766,9 +766,20 @@ def home_head():
 
 @app.get("/health")
 def health():
+    database_status = "not_configured"
+    if database_engine is not None:
+        try:
+            from sqlalchemy import text
+            with database_engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            database_status = "connected"
+        except Exception:
+            logger.exception("Database health check failed.")
+            database_status = "unavailable"
 
     return {
-        "status": "healthy",
+        "status": "healthy" if database_status in ("connected", "not_configured") else "degraded",
+        "database_status": database_status,
         "version": APP_VERSION,
         "ai_configured": bool(GEMINI_API_KEY or OPENAI_API_KEY),
         "ai_status": (
