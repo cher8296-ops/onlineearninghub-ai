@@ -435,8 +435,8 @@ def begin_ai_request(authorization: Optional[str]) -> Optional[int]:
             set_={"request_count": DailyUsage.request_count + 1},
             where=DailyUsage.request_count < limit,
         ).returning(DailyUsage.request_count)
-        with db.begin():
-            reserved = db.execute(statement).scalar_one_or_none()
+        reserved = db.execute(statement).scalar_one_or_none()
+        db.commit()
         if reserved is None:
             raise HTTPException(status_code=429, detail=f"Daily {user.plan} plan limit reached ({limit} AI requests).")
         return user.id
@@ -489,10 +489,9 @@ def history(authorization: Optional[str] = Header(default=None), db: Session = D
 @router.post("/chat")
 def chat(data: ChatInput, authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
     user = _current_user(authorization, db)
+    begin_ai_request(authorization)
     limit = PREMIUM_DAILY_LIMIT if user.plan == "premium" else FREE_DAILY_LIMIT
     used = _daily_usage(db, user)
-    if used >= limit:
-        raise HTTPException(status_code=429, detail=f"Daily {user.plan} plan limit reached ({limit} AI requests).")
     # Import lazily to avoid a circular import; app.main owns the provider implementation.
     from . import main as ai
     result = ai.ask_ai(ai.GLOBAL_QUALITY_STANDARD + "\n\nYou are the OnlineEarningHub AI chat assistant. Answer clearly, safely and in the user's language.\n\n" + data.message)
