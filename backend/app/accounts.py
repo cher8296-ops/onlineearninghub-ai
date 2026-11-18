@@ -499,7 +499,7 @@ def chat(data: ChatInput, authorization: Optional[str] = Header(default=None), d
     db.add(row)
     db.add(AnalyticsEvent(user_id=user.id, event="ai_request", path="/chat"))
     db.commit()
-    return {"answer": result["answer"], "model_used": result.get("model", ""), "usage": {"today": used + 1, "daily_limit": limit, "remaining": max(0, limit - used - 1)}}
+    return {"answer": result["answer"], "model_used": result.get("model", ""), "usage": {"today": used, "daily_limit": limit, "remaining": max(0, limit - used)}}
 
 
 @router.post("/feedback")
