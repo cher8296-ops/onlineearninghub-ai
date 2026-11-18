@@ -235,5 +235,36 @@ class EndpointContractTests(unittest.TestCase):
         ask_ai.assert_called_once()
 
 
+
+class AccountSecurityTests(unittest.TestCase):
+    def test_password_hash_verifies_and_rejects_wrong_password(self):
+        encoded = api.accounts._password_hash("long-password-123")
+        self.assertTrue(api.accounts._password_valid("long-password-123", encoded))
+        self.assertFalse(api.accounts._password_valid("wrong-password-123", encoded))
+
+    @patch.object(api.accounts, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_signed_session_token_round_trip(self):
+        token = api.accounts._token({"sub": "42", "email": "person@example.com"}, api.accounts.JWT_SECRET, 60)
+        claims = api.accounts._decode_token(token)
+        self.assertEqual(claims["sub"], "42")
+        self.assertEqual(claims["email"], "person@example.com")
+
+    @patch.object(api.accounts, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_tampered_session_token_is_rejected(self):
+        token = api.accounts._token({"sub": "42"}, api.accounts.JWT_SECRET, 60)
+        parts = token.split(".")
+        parts[1] = parts[1][:-1] + ("A" if parts[1][-1] != "A" else "B")
+        with self.assertRaises(HTTPException):
+            api.accounts._decode_token(".".join(parts))
+
+    def test_password_policy_requires_letters_and_numbers(self):
+        with patch.object(api.accounts, "JWT_SECRET", "test-secret"):
+            with self.assertRaises(HTTPException):
+                api.accounts.RegisterInput(email="person@example.com", password="letters-only-long")
+
+    def test_email_validation(self):
+        self.assertTrue(api.accounts.re_email("person@example.com"))
+        self.assertFalse(api.accounts.re_email("not-an-email"))
+
 if __name__ == "__main__":
     unittest.main()
