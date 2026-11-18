@@ -371,6 +371,21 @@ def begin_ai_request(authorization: Optional[str]) -> Optional[int]:
         db.close()
 
 
+def record_application_error(path: str) -> None:
+    if SessionLocal is None:
+        return
+    db = SessionLocal()
+    try:
+        safe_path = "/" + (path or "").strip("/").split("?")[0][:290] if path else ""
+        db.add(AnalyticsEvent(user_id=None, event="application_error", path=safe_path))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("Could not persist application error analytics.")
+    finally:
+        db.close()
+
+
 def record_ai_request(user_id: Optional[int], tool: str, prompt: str, result: dict) -> None:
     if user_id is None or SessionLocal is None:
         return
@@ -506,8 +521,8 @@ def admin_analytics(authorization: Optional[str] = Header(default=None), db: Ses
     requests = db.scalar(select(func.count(AIRequest.id)).where(AIRequest.created_at >= since)) or 0
     feedback_count = db.scalar(select(func.count(Feedback.id)).where(Feedback.created_at >= since)) or 0
     page_views = db.scalar(select(func.count(AnalyticsEvent.id)).where(AnalyticsEvent.event == "page_view", AnalyticsEvent.created_at >= since)) or 0
-    errors = 0  # Application errors are not stored as user analytics; use Render logs for operational errors.
-    return {"period_days": 30, "users": users, "verified_users": verified, "ai_requests": requests, "feedback_count": feedback_count, "page_views": page_views, "application_errors": errors, "note": "Application errors are monitored in hosting logs; no prompt text or IP addresses are collected by analytics."}
+    errors = db.scalar(select(func.count(AnalyticsEvent.id)).where(AnalyticsEvent.event == "application_error", AnalyticsEvent.created_at >= since)) or 0
+    return {"period_days": 30, "users": users, "verified_users": verified, "ai_requests": requests, "feedback_count": feedback_count, "page_views": page_views, "application_errors": errors, "note": "Application error counts contain only event names and route paths; detailed diagnostics remain in hosting logs."}
 
 
 @router.get("/admin/users")
