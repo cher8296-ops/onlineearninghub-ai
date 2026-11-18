@@ -112,8 +112,45 @@ class EndpointContractTests(unittest.TestCase):
 
         self.assertEqual(result["research_mode"], "Live Google Search grounding")
         self.assertEqual(result["sources"][0]["url"], "https://example.com")
+        self.assertIsNone(result["warning"])
         ask_ai.assert_called_once()
         self.assertTrue(ask_ai.call_args.kwargs["use_search"])
+
+    @patch.object(api, "ask_ai")
+    def test_research_falls_back_transparently_when_live_search_quota_is_unavailable(self, ask_ai):
+        ask_ai.side_effect = [
+            HTTPException(status_code=503, detail="Quota unavailable"),
+            {
+                "answer": "General background overview.",
+                "sources": [],
+                "model": "gemini-3.5-flash-lite",
+                "fallback_used": False,
+            },
+        ]
+
+        result = api.research(api.Task(description="Explain remote work trends"))
+
+        self.assertEqual(
+            result["research_mode"],
+            "AI knowledge fallback (live search unavailable)",
+        )
+        self.assertEqual(result["findings"], "General background overview.")
+        self.assertEqual(result["sources"], [])
+        self.assertIn("not been verified", result["warning"])
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual(ask_ai.call_count, 2)
+        self.assertTrue(ask_ai.call_args_list[0].kwargs["use_search"])
+        self.assertNotIn("use_search", ask_ai.call_args_list[1].kwargs)
+
+    @patch.object(api, "ask_ai")
+    def test_research_does_not_hide_non_quota_errors(self, ask_ai):
+        ask_ai.side_effect = HTTPException(status_code=502, detail="Invalid credentials")
+
+        with self.assertRaises(HTTPException) as raised:
+            api.research(api.Task(description="Research this topic"))
+
+        self.assertEqual(raised.exception.status_code, 502)
+        ask_ai.assert_called_once()
 
     @patch.object(api, "ask_ai")
     def test_quality_check_endpoint_preserves_frontend_response_contract(self, ask_ai):
