@@ -16,6 +16,8 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .accounts import router as accounts_router, initialize_database
+
 
 # ============================================================
 # ONLINEEARNINGHUB AI
@@ -137,6 +139,9 @@ app = FastAPI(
 # ============================================================
 # CORS CONFIGURATION
 # ============================================================
+
+app.include_router(accounts_router)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -983,6 +988,11 @@ def startup_event():
         "Allowed frontend origins: %s",
         ALLOWED_ORIGINS,
     )
+
+    try:
+        initialize_database()
+    except Exception as error:
+        logger.exception("Database initialization failed. ErrorType=%s", type(error).__name__)
 
     if not GEMINI_API_KEY:
 
