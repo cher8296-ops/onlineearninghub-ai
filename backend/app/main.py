@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -609,6 +610,12 @@ def home():
         "status": "running",
         "version": APP_VERSION,
     }
+
+
+@app.head("/")
+def home_head():
+
+    return Response(status_code=200)
 
 
 @app.get("/health")
