@@ -21,6 +21,7 @@ jobs:
       - name: Compile backend
         run: python -m compileall -q backend/app
       - name: Import FastAPI application
-        run: python -c "from backend.app.main import app; assert app.version == '0.8.0', f'Unexpected backend version: {app.version}'; print(f'Backend import OK (version {app.version})')"
+        run: |
+          python -c 'from backend.app.main import app; assert app.version == "0.8.0"; print("Backend import OK:", app.version)'
       - name: Run backend unit tests
         run: python -m unittest discover -s backend/tests -v
