@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Generator, Optional
 
@@ -113,7 +113,7 @@ class DailyUsage(Base):
     __tablename__ = "daily_usage"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    usage_date: Mapped[datetime] = mapped_column(Date, index=True)
+    usage_date: Mapped[date] = mapped_column(Date, index=True)
     request_count: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (
         Index("uq_daily_usage_user_date", "user_id", "usage_date", unique=True),
