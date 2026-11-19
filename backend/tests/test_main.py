@@ -291,6 +291,12 @@ class AccountSecurityTests(unittest.TestCase):
             accounts_api._decode_token(token)
 
     @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_malformed_token_encoding_returns_unauthorized(self):
+        with self.assertRaises(HTTPException) as raised:
+            accounts_api._decode_token("%%%%.%%%%.%%%%")
+        self.assertEqual(raised.exception.status_code, 401)
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
     def test_tampered_session_token_is_rejected(self):
         token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
         parts = token.split(".")
