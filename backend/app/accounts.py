@@ -6,6 +6,7 @@ No in-memory database or fake payment success is used as a production fallback.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -271,7 +272,7 @@ def _decode_token(token: str) -> dict:
         if expiration <= int(time.time()) or not isinstance(subject, str) or not subject.isdigit() or int(subject) <= 0:
             raise ValueError("expired or invalid subject")
         return claims
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError, OverflowError):
         raise HTTPException(status_code=401, detail="Your session is invalid or expired. Please sign in again.")
 
 
