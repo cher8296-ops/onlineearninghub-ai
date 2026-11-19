@@ -524,7 +524,8 @@ def feedback(data: FeedbackInput, authorization: Optional[str] = Header(default=
 def analytics_event(data: AnalyticsInput, request: Request, authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
     user = _current_user(authorization, db) if authorization else None
     # Store only allow-listed event names and normalized local paths; never store query strings or IP addresses.
-    path = "/" + data.path.strip().lstrip("/")[:299] if data.path else ""
+    raw_path = urllib.parse.urlsplit(data.path).path if data.path else ""
+    path = "/" + raw_path.strip().lstrip("/")[:299] if raw_path else ""
     db.add(AnalyticsEvent(user_id=user.id if user else None, event=data.event, path=path))
     db.commit()
     return {"status": "recorded"}
