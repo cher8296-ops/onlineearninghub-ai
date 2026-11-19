@@ -273,6 +273,24 @@ class AccountSecurityTests(unittest.TestCase):
         self.assertEqual(claims["email"], "person@example.com")
 
     @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_wrong_algorithm_header_is_rejected(self):
+        token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
+        parts = token.split(".")
+        parts[0] = accounts_api._b64(b'{"alg":"none","typ":"JWT"}')
+        signing = f"{parts[0]}.{parts[1]}".encode()
+        parts[2] = accounts_api._b64(
+            accounts_api.hmac.new(accounts_api.JWT_SECRET.encode(), signing, accounts_api.hashlib.sha256).digest()
+        )
+        with self.assertRaises(HTTPException):
+            accounts_api._decode_token(".".join(parts))
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_invalid_subject_claim_is_rejected(self):
+        token = accounts_api._token({"sub": "not-an-id"}, accounts_api.JWT_SECRET, 60)
+        with self.assertRaises(HTTPException):
+            accounts_api._decode_token(token)
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
     def test_tampered_session_token_is_rejected(self):
         token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
         parts = token.split(".")
