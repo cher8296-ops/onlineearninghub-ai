@@ -549,6 +549,10 @@ def billing_checkout(authorization: Optional[str] = Header(default=None), db: Se
         "customer_email": user.email,
         "client_reference_id": str(user.id),
         "metadata[user_id]": str(user.id),
+        # Persist user association on the Stripe Subscription itself. Subscription
+        # lifecycle webhooks can arrive before checkout.session.completed.
+        "subscription_data[metadata][user_id]": str(user.id),
+        "subscription_data[metadata][price_id]": price_id,
         "success_url": FRONTEND_URL + "/?payment=success",
         "cancel_url": FRONTEND_URL + "/?payment=cancelled",
     })
@@ -627,7 +631,13 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
     elif event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
         customer_id = obj.get("customer")
         subscription_id = obj.get("id")
-        user = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
+        metadata = obj.get("metadata") or {}
+        # Resolve by subscription metadata first; Stripe may deliver this event
+        # before checkout.session.completed has saved the customer association.
+        metadata_user_id = metadata.get("user_id")
+        user = db.get(User, int(metadata_user_id)) if metadata_user_id and str(metadata_user_id).isdigit() else None
+        if user is None and customer_id:
+            user = db.scalar(select(User).where(User.stripe_customer_id == customer_id))
         if user and subscription_id:
             status = obj.get("status", "canceled")
             subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
@@ -639,17 +649,24 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
                     status=status,
                 )
                 db.add(subscription)
+            subscription.user_id = user.id
+            subscription.provider_customer_id = customer_id
             subscription.status = status
             subscription.cancel_at_period_end = bool(obj.get("cancel_at_period_end", False))
             subscription.price_id = (((obj.get("items") or {}).get("data") or [{}])[0].get("price") or {}).get("id", "")
             period_end = obj.get("current_period_end")
             subscription.current_period_end = datetime.fromtimestamp(period_end, timezone.utc) if period_end else None
             subscription.updated_at = _now()
+            user.stripe_customer_id = customer_id or user.stripe_customer_id
             user.plan = "premium" if status in ("active", "trialing") else "free"
             action = "subscription_" + status
     elif event_type == "invoice.payment_failed":
         customer_id = obj.get("customer")
+        subscription_id = obj.get("subscription")
         user = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
+        if user is None and subscription_id:
+            subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
+            user = db.get(User, subscription.user_id) if subscription else None
         if user:
             subscription = db.scalar(select(Subscription).where(Subscription.user_id == user.id).order_by(Subscription.updated_at.desc()))
             if subscription:
