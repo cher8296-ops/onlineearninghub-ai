@@ -256,25 +256,29 @@ def _decode_token(token: str) -> dict:
     if not JWT_SECRET:
         raise HTTPException(status_code=503, detail="Authentication is not configured yet.")
     try:
-        header, body, signature = token.split(".")
-        header_data = json.loads(base64.urlsafe_b64decode(header + "=" * (-len(header) % 4)))
-        if not isinstance(header_data, dict) or header_data.get("alg") != "HS256" or header_data.get("typ") != "JWT":
-            raise ValueError("unsupported token header")
-        signing = f"{header}.{body}".encode()
+        header_segment, body, signature = token.split(".")
+        header = json.loads(base64.urlsafe_b64decode(header_segment + "=" * (-len(header_segment) % 4)))
+        if not isinstance(header, dict) or header.get("alg") != "HS256" or header.get("typ") != "JWT":
+            raise ValueError("unsupported header")
+        signing = f"{header_segment}.{body}".encode()
         expected = _b64(hmac.new(JWT_SECRET.encode(), signing, hashlib.sha256).digest())
         if not hmac.compare_digest(signature, expected):
             raise ValueError("signature")
         claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
         if not isinstance(claims, dict):
             raise ValueError("invalid claims")
-        expiration = int(claims.get("exp", 0))
+        exp = claims.get("exp")
         subject = claims.get("sub")
-        if expiration <= int(time.time()) or not isinstance(subject, str) or not subject.isdigit() or int(subject) <= 0:
-            raise ValueError("expired or invalid subject")
+        if isinstance(exp, bool) or not isinstance(exp, int) or exp <= int(time.time()):
+            raise ValueError("expired or invalid expiration")
+        if not isinstance(subject, str) or not subject.isdigit() or int(subject) <= 0:
+            raise ValueError("invalid subject")
+        email = claims.get("email")
+        if not isinstance(email, str) or not email or len(email) > 320:
+            raise ValueError("invalid email claim")
         return claims
-    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError, OverflowError):
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OverflowError):
         raise HTTPException(status_code=401, detail="Your session is invalid or expired. Please sign in again.")
-
 
 def _current_user(authorization: Optional[str], db: Session) -> User:
     if not authorization or not authorization.lower().startswith("bearer "):
