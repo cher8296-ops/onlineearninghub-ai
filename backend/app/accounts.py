@@ -225,6 +225,15 @@ def _subscription_event_is_stale(event_created: int, last_event_created: Optiona
     return last_event_created is not None and event_created < last_event_created
 
 
+def _subscription_owner_conflict(subscription: Subscription, user_id: Optional[int], customer_id: Optional[str]) -> bool:
+    """Prevent webhook metadata/customer identifiers from reassigning stored subscription ownership."""
+    if user_id is not None and subscription.user_id != user_id:
+        return True
+    if customer_id and subscription.provider_customer_id and subscription.provider_customer_id != customer_id:
+        return True
+    return False
+
+
 def _sync_user_plan(db: Session, user: User) -> str:
     """Derive entitlement from all persisted subscriptions for this user."""
     # SessionLocal disables autoflush. Flush pending Subscription changes before
@@ -638,7 +647,7 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
                 customer_owner = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
                 subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
                 # Never reassign an existing subscription or Stripe customer to another account.
-                if subscription and subscription.user_id != user.id:
+                if subscription and _subscription_owner_conflict(subscription, user.id, customer_id):
                     user = None
                 elif customer_owner and customer_owner.id != user.id:
                     user = None
@@ -679,8 +688,11 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
             user = db.scalar(select(User).where(User.stripe_customer_id == customer_id))
         subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id)) if subscription_id else None
         if subscription is not None:
-            # The existing subscription record is authoritative for account ownership.
-            user = db.get(User, subscription.user_id)
+            # Stored subscription ownership must match incoming metadata and customer.
+            if _subscription_owner_conflict(subscription, int(metadata_user_id) if metadata_user_id and str(metadata_user_id).isdigit() else None, customer_id):
+                user = None
+            else:
+                user = db.get(User, subscription.user_id)
         elif user is not None and subscription_id:
             customer_owner = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
             if customer_owner and customer_owner.id != user.id:
@@ -722,7 +734,10 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
             user = db.get(User, subscription.user_id) if subscription else None
         subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id)) if subscription_id else None
         if subscription:
-            user = db.get(User, subscription.user_id)
+            if _subscription_owner_conflict(subscription, None, customer_id):
+                user = None
+            else:
+                user = db.get(User, subscription.user_id)
             if user and not _subscription_event_is_stale(event_created, subscription.last_event_created):
                 subscription.status = "past_due"
                 subscription.last_event_created = event_created
