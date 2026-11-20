@@ -24,7 +24,7 @@ from typing import Generator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select, text
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -132,7 +132,7 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     price_id: Mapped[str] = mapped_column(String(128), default="")
     current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_event_created: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_event_created: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     cancel_at_period_end: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -711,7 +711,6 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
             subscription.current_period_end = datetime.fromtimestamp(period_end, timezone.utc) if period_end else None
             subscription.updated_at = _now()
             user.stripe_customer_id = customer_id or user.stripe_customer_id
-            subscription.last_event_created = event_created
             _sync_user_plan(db, user)
             action = "subscription_" + status
     elif event_type == "invoice.payment_failed":
