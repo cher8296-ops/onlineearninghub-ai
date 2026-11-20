@@ -238,6 +238,10 @@ class EndpointContractTests(unittest.TestCase):
 
 
 class StripeSubscriptionOrderingTests(unittest.TestCase):
+    def test_subscription_event_timestamp_column_uses_bigint(self):
+        column = accounts_api.Subscription.__table__.c.last_event_created
+        self.assertIsInstance(column.type, accounts_api.BigInteger)
+
     def test_older_subscription_event_is_rejected(self):
         self.assertTrue(accounts_api._subscription_event_is_stale(100, 101))
         self.assertFalse(accounts_api._subscription_event_is_stale(101, 101))
