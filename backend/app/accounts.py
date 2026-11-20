@@ -640,6 +640,16 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
                 elif customer_owner and customer_owner.id != user.id:
                     user = None
                 else:
+                    if subscription is None:
+                        subscription = Subscription(
+                            user_id=user.id,
+                            provider_subscription_id=subscription_id,
+                            provider_customer_id=customer_id,
+                            status="active",
+                            price_id=(obj.get("metadata") or {}).get("price_id", ""),
+                            last_event_created=event_created,
+                        )
+                        db.add(subscription)
                     if customer_id:
                         user.stripe_customer_id = customer_id
                     _sync_user_plan(db, user)
