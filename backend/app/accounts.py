@@ -132,6 +132,7 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     price_id: Mapped[str] = mapped_column(String(128), default="")
     current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_event_created: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     cancel_at_period_end: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -217,6 +218,18 @@ def get_db() -> Generator[Session, None, None]:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _subscription_event_is_stale(event_created: int, last_event_created: Optional[int]) -> bool:
+    """Reject lifecycle snapshots older than the most recently applied Stripe event."""
+    return last_event_created is not None and event_created < last_event_created
+
+
+def _sync_user_plan(db: Session, user: User) -> str:
+    """Derive entitlement from all subscriptions; one failed subscription cannot revoke another."""
+    statuses = db.scalars(select(Subscription.status).where(Subscription.user_id == user.id)).all()
+    user.plan = "premium" if any(status in ("active", "trialing") for status in statuses) else "free"
+    return user.plan
 
 
 def _password_hash(password: str, salt: Optional[bytes] = None) -> str:
@@ -606,6 +619,9 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         return {"received": True, "duplicate": True}
 
     obj = (event.get("data") or {}).get("object") or {}
+    event_created = event.get("created")
+    if isinstance(event_created, bool) or not isinstance(event_created, int) or event_created <= 0:
+        raise HTTPException(status_code=400, detail="Payment event has an invalid timestamp.")
     user = None
     action = None
     if event_type == "checkout.session.completed":
@@ -615,19 +631,19 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
             user = db.get(User, int(user_id)) if user_id and str(user_id).isdigit() else None
             subscription_id = obj.get("subscription")
             if user and subscription_id:
-                user.plan = "premium"
-                user.stripe_customer_id = obj.get("customer")
+                customer_id = obj.get("customer")
+                customer_owner = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
                 subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
-                if subscription is None:
-                    subscription = Subscription(
-                        user_id=user.id,
-                        provider_subscription_id=subscription_id,
-                        provider_customer_id=obj.get("customer"),
-                        status="active",
-                        price_id=(obj.get("metadata") or {}).get("price_id", ""),
-                    )
-                    db.add(subscription)
-                action = "subscription_checkout_completed"
+                # Never reassign an existing subscription or Stripe customer to another account.
+                if subscription and subscription.user_id != user.id:
+                    user = None
+                elif customer_owner and customer_owner.id != user.id:
+                    user = None
+                else:
+                    if customer_id:
+                        user.stripe_customer_id = customer_id
+                    _sync_user_plan(db, user)
+                    action = "subscription_checkout_completed"
     elif event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
         customer_id = obj.get("customer")
         subscription_id = obj.get("id")
@@ -638,9 +654,22 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         user = db.get(User, int(metadata_user_id)) if metadata_user_id and str(metadata_user_id).isdigit() else None
         if user is None and customer_id:
             user = db.scalar(select(User).where(User.stripe_customer_id == customer_id))
+        subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id)) if subscription_id else None
+        if subscription is not None:
+            # The existing subscription record is authoritative for account ownership.
+            user = db.get(User, subscription.user_id)
+        elif user is not None and subscription_id:
+            customer_owner = db.scalar(select(User).where(User.stripe_customer_id == customer_id)) if customer_id else None
+            if customer_owner and customer_owner.id != user.id:
+                user = None
         if user and subscription_id:
             status = obj.get("status", "canceled")
-            subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
+            if subscription and _subscription_event_is_stale(event_created, subscription.last_event_created):
+                payment_event = db.scalar(select(PaymentEvent).where(PaymentEvent.provider_event_id == event_id))
+                if payment_event:
+                    payment_event.outcome = "stale"
+                db.commit()
+                return {"received": True, "stale": True}
             if subscription is None:
                 subscription = Subscription(
                     user_id=user.id,
@@ -652,13 +681,15 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
             subscription.user_id = user.id
             subscription.provider_customer_id = customer_id
             subscription.status = status
+            subscription.last_event_created = event_created
             subscription.cancel_at_period_end = bool(obj.get("cancel_at_period_end", False))
             subscription.price_id = (((obj.get("items") or {}).get("data") or [{}])[0].get("price") or {}).get("id", "")
             period_end = obj.get("current_period_end")
             subscription.current_period_end = datetime.fromtimestamp(period_end, timezone.utc) if period_end else None
             subscription.updated_at = _now()
             user.stripe_customer_id = customer_id or user.stripe_customer_id
-            user.plan = "premium" if status in ("active", "trialing") else "free"
+            subscription.last_event_created = event_created
+            _sync_user_plan(db, user)
             action = "subscription_" + status
     elif event_type == "invoice.payment_failed":
         customer_id = obj.get("customer")
@@ -667,13 +698,18 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
         if user is None and subscription_id:
             subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id))
             user = db.get(User, subscription.user_id) if subscription else None
-        if user:
-            subscription = db.scalar(select(Subscription).where(Subscription.user_id == user.id).order_by(Subscription.updated_at.desc()))
-            if subscription:
+        subscription = db.scalar(select(Subscription).where(Subscription.provider_subscription_id == subscription_id)) if subscription_id else None
+        if subscription:
+            user = db.get(User, subscription.user_id)
+            if user and not _subscription_event_is_stale(event_created, subscription.last_event_created):
                 subscription.status = "past_due"
+                subscription.last_event_created = event_created
                 subscription.updated_at = _now()
-            user.plan = "free"
-            action = "subscription_payment_failed"
+                _sync_user_plan(db, user)
+                action = "subscription_payment_failed"
+        elif user:
+            # Without a subscription ID, avoid changing entitlement; Stripe invoices normally carry one.
+            action = None
 
     payment_event = db.scalar(select(PaymentEvent).where(PaymentEvent.provider_event_id == event_id))
     if payment_event:
