@@ -237,6 +237,69 @@ class EndpointContractTests(unittest.TestCase):
 
 
 
+class StripeSubscriptionOrderingTests(unittest.TestCase):
+    def test_subscription_event_timestamp_column_uses_bigint(self):
+        column = accounts_api.Subscription.__table__.c.last_event_created
+        self.assertIsInstance(column.type, accounts_api.BigInteger)
+
+    def test_subscription_owner_conflicts_are_rejected(self):
+        stored = type("StoredSubscription", (), {
+            "user_id": 12,
+            "provider_customer_id": "cus_original",
+        })()
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 13, "cus_original"))
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 12, "cus_other"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, None, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, None))
+
+    def test_older_subscription_event_is_rejected(self):
+        self.assertTrue(accounts_api._subscription_event_is_stale(100, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(101, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(102, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(100, None))
+
+    def test_plan_entitlement_uses_any_active_subscription(self):
+        class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["past_due", "active"]
+                return FakeRows()
+
+        db = FakeDb()
+        user = type("UserStub", (), {"id": 5, "plan": "free"})()
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
+        self.assertEqual(result, "premium")
+        self.assertEqual(user.plan, "premium")
+
+    def test_plan_entitlement_reverts_only_when_no_active_subscription(self):
+        class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["canceled", "past_due"]
+                return FakeRows()
+
+        db = FakeDb()
+        user = type("UserStub", (), {"id": 5, "plan": "premium"})()
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
+        self.assertEqual(result, "free")
+        self.assertEqual(user.plan, "free")
+
+
 class DatabaseSchemaTests(unittest.TestCase):
     def test_required_accounting_and_audit_tables_exist(self):
         expected = {
