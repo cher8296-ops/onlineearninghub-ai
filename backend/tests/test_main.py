@@ -246,27 +246,41 @@ class StripeSubscriptionOrderingTests(unittest.TestCase):
 
     def test_plan_entitlement_uses_any_active_subscription(self):
         class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
             def scalars(self, statement):
                 class FakeRows:
                     def all(self):
                         return ["past_due", "active"]
                 return FakeRows()
 
+        db = FakeDb()
         user = type("UserStub", (), {"id": 5, "plan": "free"})()
-        result = accounts_api._sync_user_plan(FakeDb(), user)
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
         self.assertEqual(result, "premium")
         self.assertEqual(user.plan, "premium")
 
     def test_plan_entitlement_reverts_only_when_no_active_subscription(self):
         class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
             def scalars(self, statement):
                 class FakeRows:
                     def all(self):
                         return ["canceled", "past_due"]
                 return FakeRows()
 
+        db = FakeDb()
         user = type("UserStub", (), {"id": 5, "plan": "premium"})()
-        result = accounts_api._sync_user_plan(FakeDb(), user)
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
         self.assertEqual(result, "free")
         self.assertEqual(user.plan, "free")
 
