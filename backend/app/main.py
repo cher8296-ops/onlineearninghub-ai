@@ -11,10 +11,12 @@ import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from .accounts import router as accounts_router, begin_ai_request, engine as database_engine, initialize_database, record_ai_request, record_application_error
 
 
 # ============================================================
@@ -137,6 +139,17 @@ app = FastAPI(
 # ============================================================
 # CORS CONFIGURATION
 # ============================================================
+
+app.include_router(accounts_router)
+
+
+@app.middleware("http")
+async def capture_application_errors(request, call_next):
+    response = await call_next(request)
+    if response.status_code >= 500:
+        record_application_error(request.url.path)
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -753,9 +766,20 @@ def home_head():
 
 @app.get("/health")
 def health():
+    database_status = "not_configured"
+    if database_engine is not None:
+        try:
+            from sqlalchemy import text
+            with database_engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            database_status = "connected"
+        except Exception:
+            logger.exception("Database health check failed.")
+            database_status = "unavailable"
 
     return {
-        "status": "healthy",
+        "status": "healthy" if database_status in ("connected", "not_configured") else "degraded",
+        "database_status": database_status,
         "version": APP_VERSION,
         "ai_configured": bool(GEMINI_API_KEY or OPENAI_API_KEY),
         "ai_status": (
@@ -821,7 +845,8 @@ def jobs():
 # ============================================================
 
 @app.post("/plan")
-def plan(task: Task):
+def plan(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are TaskPlanner for OnlineEarningHub AI. "
@@ -833,6 +858,7 @@ def plan(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "plan", task.description, result)
 
     return {
         "agent": "TaskPlanner",
@@ -848,7 +874,8 @@ def plan(task: Task):
 # ============================================================
 
 @app.post("/write")
-def write(task: Task):
+def write(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are WritingAssistant for OnlineEarningHub AI. "
@@ -859,6 +886,7 @@ def write(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "write", task.description, result)
 
     return {
         "agent": "WritingAssistant",
@@ -874,7 +902,8 @@ def write(task: Task):
 # ============================================================
 
 @app.post("/research")
-def research(task: Task):
+def research(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are ResearchAssistant for OnlineEarningHub AI. "
@@ -927,6 +956,8 @@ def research(task: Task):
             "This answer uses AI knowledge only and has not been verified against current web sources."
         )
 
+    record_ai_request(user_id, "research", task.description, result)
+
     return {
         "agent": "ResearchAssistant",
         "topic": task.description,
@@ -944,7 +975,8 @@ def research(task: Task):
 # ============================================================
 
 @app.post("/check")
-def check(task: Task):
+def check(task: Task, authorization: str | None = Header(default=None)):
+    user_id = begin_ai_request(authorization)
 
     prompt = GLOBAL_QUALITY_STANDARD + "\n\n" + (
         "You are QualityChecker for OnlineEarningHub AI. "
@@ -956,6 +988,7 @@ def check(task: Task):
     )
 
     result = ask_ai(prompt)
+    record_ai_request(user_id, "check", task.description, result)
 
     return {
         "agent": "QualityChecker",
@@ -983,6 +1016,14 @@ def startup_event():
         "Allowed frontend origins: %s",
         ALLOWED_ORIGINS,
     )
+
+    try:
+        initialize_database()
+    except Exception as error:
+        logger.exception("Database connectivity or migration verification failed. ErrorType=%s", type(error).__name__)
+        if os.getenv("DATABASE_URL", "").strip():
+            # Do not serve account or billing traffic with an unverified schema.
+            raise RuntimeError("Database migrations must be applied before the backend can start.") from error
 
     if not GEMINI_API_KEY:
 

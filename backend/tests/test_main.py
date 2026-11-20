@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.app import main as api
+from backend.app import accounts as accounts_api
 
 
 class RequestValidationTests(unittest.TestCase):
@@ -234,6 +235,141 @@ class EndpointContractTests(unittest.TestCase):
         self.assertEqual(result["model_used"], "gemini-3.5-flash-lite")
         ask_ai.assert_called_once()
 
+
+
+class StripeSubscriptionOrderingTests(unittest.TestCase):
+    def test_subscription_event_timestamp_column_uses_bigint(self):
+        column = accounts_api.Subscription.__table__.c.last_event_created
+        self.assertIsInstance(column.type, accounts_api.BigInteger)
+
+    def test_subscription_owner_conflicts_are_rejected(self):
+        stored = type("StoredSubscription", (), {
+            "user_id": 12,
+            "provider_customer_id": "cus_original",
+        })()
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 13, "cus_original"))
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 12, "cus_other"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, None, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, None))
+
+    def test_older_subscription_event_is_rejected(self):
+        self.assertTrue(accounts_api._subscription_event_is_stale(100, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(101, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(102, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(100, None))
+
+    def test_plan_entitlement_uses_any_active_subscription(self):
+        class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["past_due", "active"]
+                return FakeRows()
+
+        db = FakeDb()
+        user = type("UserStub", (), {"id": 5, "plan": "free"})()
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
+        self.assertEqual(result, "premium")
+        self.assertEqual(user.plan, "premium")
+
+    def test_plan_entitlement_reverts_only_when_no_active_subscription(self):
+        class FakeDb:
+            flushed = False
+
+            def flush(self):
+                self.flushed = True
+
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["canceled", "past_due"]
+                return FakeRows()
+
+        db = FakeDb()
+        user = type("UserStub", (), {"id": 5, "plan": "premium"})()
+        result = accounts_api._sync_user_plan(db, user)
+        self.assertTrue(db.flushed)
+        self.assertEqual(result, "free")
+        self.assertEqual(user.plan, "free")
+
+
+class DatabaseSchemaTests(unittest.TestCase):
+    def test_required_accounting_and_audit_tables_exist(self):
+        expected = {
+            "users", "email_verifications", "ai_requests", "daily_usage",
+            "subscriptions", "payment_events", "feedback",
+            "analytics_events", "audit_logs",
+        }
+        self.assertTrue(expected.issubset(set(accounts_api.Base.metadata.tables)))
+
+    def test_daily_usage_has_unique_user_day_constraint(self):
+        table = accounts_api.DailyUsage.__table__
+        indexes = [index for index in table.indexes if index.unique]
+        self.assertTrue(any(
+            {column.name for column in index.columns} == {"user_id", "usage_date"}
+            for index in indexes
+        ))
+
+    def test_payment_event_id_is_unique_for_webhook_idempotency(self):
+        column = accounts_api.PaymentEvent.__table__.c.provider_event_id
+        self.assertTrue(column.unique)
+
+
+class AccountSecurityTests(unittest.TestCase):
+    def test_password_hash_verifies_and_rejects_wrong_password(self):
+        encoded = accounts_api._password_hash("long-password-123")
+        self.assertTrue(accounts_api._password_valid("long-password-123", encoded))
+        self.assertFalse(accounts_api._password_valid("wrong-password-123", encoded))
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_signed_session_token_round_trip(self):
+        token = accounts_api._token({"sub": "42", "email": "person@example.com"}, accounts_api.JWT_SECRET, 60)
+        claims = accounts_api._decode_token(token)
+        self.assertEqual(claims["sub"], "42")
+        self.assertEqual(claims["email"], "person@example.com")
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_wrong_algorithm_header_is_rejected(self):
+        token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
+        parts = token.split(".")
+        parts[0] = accounts_api._b64(b'{"alg":"none","typ":"JWT"}')
+        signing = f"{parts[0]}.{parts[1]}".encode()
+        parts[2] = accounts_api._b64(
+            accounts_api.hmac.new(accounts_api.JWT_SECRET.encode(), signing, accounts_api.hashlib.sha256).digest()
+        )
+        with self.assertRaises(HTTPException):
+            accounts_api._decode_token(".".join(parts))
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_invalid_subject_claim_is_rejected(self):
+        token = accounts_api._token({"sub": "not-an-id"}, accounts_api.JWT_SECRET, 60)
+        with self.assertRaises(HTTPException):
+            accounts_api._decode_token(token)
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_malformed_token_encoding_returns_unauthorized(self):
+        with self.assertRaises(HTTPException) as raised:
+            accounts_api._decode_token("%%%%.%%%%.%%%%")
+        self.assertEqual(raised.exception.status_code, 401)
+
+    @patch.object(accounts_api, "JWT_SECRET", "test-secret-with-sufficient-entropy")
+    def test_tampered_session_token_is_rejected(self):
+        token = accounts_api._token({"sub": "42"}, accounts_api.JWT_SECRET, 60)
+        parts = token.split(".")
+        parts[2] = ("A" if parts[2][0] != "A" else "B") + parts[2][1:]
+        with self.assertRaises(HTTPException):
+            accounts_api._decode_token(".".join(parts))
+
+    def test_email_validation(self):
+        self.assertTrue(accounts_api.re_email("person@example.com"))
+        self.assertFalse(accounts_api.re_email("not-an-email"))
 
 if __name__ == "__main__":
     unittest.main()
