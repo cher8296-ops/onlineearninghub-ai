@@ -226,7 +226,10 @@ def _subscription_event_is_stale(event_created: int, last_event_created: Optiona
 
 
 def _sync_user_plan(db: Session, user: User) -> str:
-    """Derive entitlement from all subscriptions; one failed subscription cannot revoke another."""
+    """Derive entitlement from all persisted subscriptions for this user."""
+    # SessionLocal disables autoflush. Flush pending Subscription changes before
+    # querying so newly created subscriptions participate in entitlement sync.
+    db.flush()
     statuses = db.scalars(select(Subscription.status).where(Subscription.user_id == user.id)).all()
     user.plan = "premium" if any(status in ("active", "trialing") for status in statuses) else "free"
     return user.plan
