@@ -639,6 +639,12 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
                     user = None
                 elif customer_owner and customer_owner.id != user.id:
                     user = None
+                elif subscription and _subscription_event_is_stale(event_created, subscription.last_event_created):
+                    payment_event = db.scalar(select(PaymentEvent).where(PaymentEvent.provider_event_id == event_id))
+                    if payment_event:
+                        payment_event.outcome = "stale"
+                    db.commit()
+                    return {"received": True, "stale": True}
                 else:
                     if subscription is None:
                         subscription = Subscription(
@@ -650,6 +656,10 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)):
                             last_event_created=event_created,
                         )
                         db.add(subscription)
+                    else:
+                        subscription.status = "active"
+                        subscription.last_event_created = event_created
+                        subscription.updated_at = _now()
                     if customer_id:
                         user.stripe_customer_id = customer_id
                     _sync_user_plan(db, user)
