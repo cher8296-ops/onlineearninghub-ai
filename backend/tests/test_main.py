@@ -242,6 +242,17 @@ class StripeSubscriptionOrderingTests(unittest.TestCase):
         column = accounts_api.Subscription.__table__.c.last_event_created
         self.assertIsInstance(column.type, accounts_api.BigInteger)
 
+    def test_subscription_owner_conflicts_are_rejected(self):
+        stored = type("StoredSubscription", (), {
+            "user_id": 12,
+            "provider_customer_id": "cus_original",
+        })()
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 13, "cus_original"))
+        self.assertTrue(accounts_api._subscription_owner_conflict(stored, 12, "cus_other"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, None, "cus_original"))
+        self.assertFalse(accounts_api._subscription_owner_conflict(stored, 12, None))
+
     def test_older_subscription_event_is_rejected(self):
         self.assertTrue(accounts_api._subscription_event_is_stale(100, 101))
         self.assertFalse(accounts_api._subscription_event_is_stale(101, 101))
