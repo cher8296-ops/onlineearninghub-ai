@@ -237,6 +237,40 @@ class EndpointContractTests(unittest.TestCase):
 
 
 
+class StripeSubscriptionOrderingTests(unittest.TestCase):
+    def test_older_subscription_event_is_rejected(self):
+        self.assertTrue(accounts_api._subscription_event_is_stale(100, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(101, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(102, 101))
+        self.assertFalse(accounts_api._subscription_event_is_stale(100, None))
+
+    def test_plan_entitlement_uses_any_active_subscription(self):
+        class FakeDb:
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["past_due", "active"]
+                return FakeRows()
+
+        user = type("UserStub", (), {"id": 5, "plan": "free"})()
+        result = accounts_api._sync_user_plan(FakeDb(), user)
+        self.assertEqual(result, "premium")
+        self.assertEqual(user.plan, "premium")
+
+    def test_plan_entitlement_reverts_only_when_no_active_subscription(self):
+        class FakeDb:
+            def scalars(self, statement):
+                class FakeRows:
+                    def all(self):
+                        return ["canceled", "past_due"]
+                return FakeRows()
+
+        user = type("UserStub", (), {"id": 5, "plan": "premium"})()
+        result = accounts_api._sync_user_plan(FakeDb(), user)
+        self.assertEqual(result, "free")
+        self.assertEqual(user.plan, "free")
+
+
 class DatabaseSchemaTests(unittest.TestCase):
     def test_required_accounting_and_audit_tables_exist(self):
         expected = {
