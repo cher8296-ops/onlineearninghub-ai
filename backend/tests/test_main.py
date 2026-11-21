@@ -235,5 +235,32 @@ class EndpointContractTests(unittest.TestCase):
         ask_ai.assert_called_once()
 
 
+
+class SecurityHeaderTests(unittest.TestCase):
+    def test_security_headers_are_present_on_api_responses(self):
+        from fastapi.testclient import TestClient
+
+        with TestClient(api.app) as client:
+            response = client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(response.headers["x-frame-options"], "DENY")
+        self.assertEqual(
+            response.headers["referrer-policy"],
+            "strict-origin-when-cross-origin",
+        )
+        self.assertIn("camera=()", response.headers["permissions-policy"])
+
+    def test_api_robots_endpoint_disallows_crawling(self):
+        from fastapi.testclient import TestClient
+
+        with TestClient(api.app) as client:
+            response = client.get("/robots.txt")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "text/plain; charset=utf-8")
+        self.assertIn("Disallow: /", response.text)
+
 if __name__ == "__main__":
     unittest.main()
