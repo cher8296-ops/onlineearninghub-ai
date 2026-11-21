@@ -734,6 +734,49 @@ def ask_ai(
 
 
 # ============================================================
+# BASIC PER-IP RATE LIMITING (single-instance memory store)
+# ============================================================
+
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "300"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "8"))
+_RATE_LIMIT_BUCKETS = {}
+_RATE_LIMIT_LOCK = __import__("threading").Lock()
+
+@app.middleware("http")
+async def rate_limit_requests(request, call_next):
+    if request.method != "POST" or request.url.path not in {"/plan", "/write", "/research", "/check"}:
+        return await call_next(request)
+    now = time.monotonic()
+    client_ip = request.client.host if request.client else "unknown"
+    # Only trust forwarded headers when configured explicitly for the platform.
+    if os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true":
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()[:64]
+    bucket_key = client_ip
+    with _RATE_LIMIT_LOCK:
+        bucket = [timestamp for timestamp in _RATE_LIMIT_BUCKETS.get(bucket_key, []) if now - timestamp < RATE_LIMIT_WINDOW_SECONDS]
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - bucket[0])))
+            _RATE_LIMIT_BUCKETS[bucket_key] = bucket
+            return Response(
+                content=json.dumps({"detail": "Rate limit exceeded. Please wait before retrying."}),
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+            )
+        bucket.append(now)
+        _RATE_LIMIT_BUCKETS[bucket_key] = bucket
+        # Periodically prune old client buckets to bound memory usage.
+        if len(_RATE_LIMIT_BUCKETS) > 5000:
+            cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+            for key in list(_RATE_LIMIT_BUCKETS):
+                if not _RATE_LIMIT_BUCKETS[key] or _RATE_LIMIT_BUCKETS[key][-1] < cutoff:
+                    _RATE_LIMIT_BUCKETS.pop(key, None)
+    return await call_next(request)
+
+
+# ============================================================
 # SECURITY RESPONSE HEADERS
 # ============================================================
 
