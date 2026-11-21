@@ -262,5 +262,30 @@ class SecurityHeaderTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "text/plain; charset=utf-8")
         self.assertIn("Disallow: /", response.text)
 
+
+class RateLimitSecurityTests(unittest.TestCase):
+    def test_ai_endpoint_rate_limit_returns_429_with_retry_headers(self):
+        from fastapi.testclient import TestClient
+
+        api._RATE_LIMIT_BUCKETS.clear()
+        with patch.object(api, "RATE_LIMIT_MAX_REQUESTS", 2), patch.object(
+            api, "ask_ai",
+            return_value={
+                "answer": "A test answer.",
+                "sources": [],
+                "model": "test-model",
+                "fallback_used": False,
+            },
+        ):
+            with TestClient(api.app) as client:
+                payload = {"description": "Write a short test response"}
+                self.assertEqual(client.post("/write", json=payload).status_code, 200)
+                self.assertEqual(client.post("/write", json=payload).status_code, 200)
+                blocked = client.post("/write", json=payload)
+                self.assertEqual(blocked.status_code, 429)
+                self.assertIn("Retry-After", blocked.headers)
+                self.assertEqual(blocked.headers.get("cache-control"), "no-store")
+        api._RATE_LIMIT_BUCKETS.clear()
+
 if __name__ == "__main__":
     unittest.main()
