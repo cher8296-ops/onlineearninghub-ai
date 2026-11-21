@@ -732,8 +732,48 @@ def ask_ai(
 
 
 # ============================================================
+# SECURITY RESPONSE HEADERS
+# ============================================================
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+
+    response.headers.setdefault(
+        "X-Content-Type-Options", "nosniff"
+    )
+    response.headers.setdefault(
+        "X-Frame-Options", "DENY"
+    )
+    response.headers.setdefault(
+        "Referrer-Policy", "strict-origin-when-cross-origin"
+    )
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()",
+    )
+
+    if request.url.path in {
+        "/plan", "/write", "/research", "/check"
+    }:
+        response.headers["Cache-Control"] = "no-store"
+
+    return response
+
+
+# ============================================================
 # HEALTH AND INFORMATION ENDPOINTS
 # ============================================================
+
+@app.get("/robots.txt", include_in_schema=False)
+def api_robots():
+    # This host serves an API, not indexable public website content.
+    return Response(
+        content="User-agent: *\nDisallow: /\n",
+        media_type="text/plain",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
 
 @app.get("/")
 def home():
