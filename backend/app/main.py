@@ -101,6 +101,7 @@ DEFAULT_FRONTEND_ORIGINS = [
     "https://www.flowchera21.bg5.net",
     "https://flowchera21.bg5.net",
     "https://onlineearninghub-ai-frontend.onrender.com",
+    "https://flowchera21-video-studio.onrender.com",
     "http://localhost:5173",
 ]
 
