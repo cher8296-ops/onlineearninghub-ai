@@ -744,7 +744,7 @@ _RATE_LIMIT_LOCK = __import__("threading").Lock()
 
 @app.middleware("http")
 async def rate_limit_requests(request, call_next):
-    if request.method != "POST" or request.url.path not in {"/plan", "/write", "/research", "/check"}:
+    if request.method != "POST" or request.url.path not in {"/plan", "/write", "/research", "/check", "/video/voice"}:
         return await call_next(request)
     now = time.monotonic()
     client_ip = request.client.host if request.client else "unknown"
@@ -1082,3 +1082,103 @@ def startup_event():
         logger.warning(
             "GEMINI_API_KEY is not configured."
         )
+
+
+# ============================================================
+# VIDEO STUDIO: OPT-IN TEXT-TO-SPEECH (MP3)
+# ============================================================
+
+VIDEO_TTS_ENABLED = os.getenv("VIDEO_TTS_ENABLED", "false").strip().lower() == "true"
+VIDEO_TTS_MODEL = os.getenv("VIDEO_TTS_MODEL", "gpt-4o-mini-tts").strip()
+
+class VideoVoiceRequest(BaseModel):
+    text: str = Field(min_length=10, max_length=4000)
+    language: str = Field(pattern="^(om|en|am)$")
+    voice_role: str = Field(pattern="^(adult-female|adult-male|young-adult|older-adult)$")
+
+@app.get("/video/capabilities")
+def video_capabilities():
+    voice_ready = VIDEO_TTS_ENABLED and bool(OPENAI_API_KEY)
+    return {
+        "voice_generation": voice_ready,
+        "voice_reason": None if voice_ready else (
+            "Enable VIDEO_TTS_ENABLED and configure OPENAI_API_KEY to use paid text-to-speech."
+        ),
+        "supported_language_choices": ["om", "en", "am"],
+        "language_quality_note": (
+            "Multilingual synthesis quality varies by language. Afaan Oromoo and Amharic output "
+            "must be reviewed by a fluent speaker before publication."
+        ),
+        "mp4_rendering": False,
+        "mp4_reason": "A video-rendering worker, media storage and rendering pipeline are not deployed yet.",
+        "max_voice_characters_per_request": 4000,
+    }
+
+@app.post("/video/voice")
+def generate_video_voice(request_data: VideoVoiceRequest):
+    if not VIDEO_TTS_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Video voice generation is disabled. The administrator must explicitly enable VIDEO_TTS_ENABLED after reviewing API billing."
+        )
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Text-to-speech provider credentials are not configured."
+        )
+
+    voice_by_role = {
+        "adult-female": "nova",
+        "adult-male": "onyx",
+        "young-adult": "shimmer",
+        "older-adult": "echo",
+    }
+    language_names = {"om": "Afaan Oromoo", "en": "English", "am": "Amharic"}
+    instructions = (
+        f"Speak clearly and naturally in {language_names[request_data.language]}. "
+        "Use an original, non-imitative narrator voice. "
+        "Do not imitate any identifiable person. "
+        "Use a measured pace suitable for an educational video."
+    )
+    payload = {
+        "model": VIDEO_TTS_MODEL,
+        "voice": voice_by_role[request_data.voice_role],
+        "input": request_data.text,
+        "instructions": instructions,
+        "response_format": "mp3",
+    }
+    provider_request = urllib.request.Request(
+        "https://api.openai.com/v1/audio/speech",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(provider_request, timeout=90) as provider_response:
+            audio_bytes = provider_response.read(15 * 1024 * 1024 + 1)
+            if len(audio_bytes) > 15 * 1024 * 1024:
+                raise HTTPException(status_code=502, detail="Generated audio exceeded the allowed size.")
+            if not audio_bytes:
+                raise HTTPException(status_code=502, detail="The voice provider returned empty audio.")
+            return Response(
+                content=audio_bytes,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": 'attachment; filename="flowchera21-narration.mp3"',
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+    except urllib.error.HTTPError as error:
+        logger.warning("Video TTS provider returned HTTP %s.", error.code)
+        if error.code in (401, 403):
+            raise HTTPException(status_code=502, detail="The configured voice provider rejected its credentials or permissions.") from error
+        if error.code == 429:
+            raise HTTPException(status_code=503, detail="The voice provider quota or rate limit has been reached.") from error
+        raise HTTPException(status_code=502, detail=f"Voice generation failed at the provider (HTTP {error.code}).") from error
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as error:
+        logger.warning("Video TTS provider connection failed: %s", type(error).__name__)
+        raise HTTPException(status_code=504, detail="The voice provider did not respond in time.") from error
